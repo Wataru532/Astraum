@@ -1,0 +1,79 @@
+// Windows resources: application icon and version information
+1 ICON "../assets/icon.ico"
+
+// surface maps (public domain NASA / USGS data, see assets/maps/SOURCES.txt; built by tools/make_maps.py)
+201 RCDATA "../assets/maps/earth_color.jpg"
+202 RCDATA "../assets/maps/earth_height.png"
+203 RCDATA "../assets/maps/moon_color.jpg"
+204 RCDATA "../assets/maps/moon_height.png"
+205 RCDATA "../assets/maps/mars_color.jpg"
+206 RCDATA "../assets/maps/mars_height.png"
+// sound effects (src/audio/fx, the order of sfx::Ev) and music (src/audio/bgm)
+301 RCDATA "audio/fx/click.wav"
+302 RCDATA "audio/fx/toggle.wav"
+303 RCDATA "audio/fx/stage.wav"
+304 RCDATA "audio/fx/ignite.wav"
+305 RCDATA "audio/fx/explosion.wav"
+306 RCDATA "audio/fx/chute.wav"
+307 RCDATA "audio/fx/touchdown.wav"
+308 RCDATA "audio/fx/hyper_in.wav"
+309 RCDATA "audio/fx/hyper_out.wav"
+310 RCDATA "audio/fx/tear.wav"
+311 RCDATA "audio/fx/milestone.wav"
+312 RCDATA "audio/fx/explosion_far.wav"
+321 RCDATA "audio/bgm/Beyond_The_Last_Star.mp3"
+322 RCDATA "audio/bgm/Charting_the_Far_Reach.mp3"
+323 RCDATA "audio/bgm/Crossing_The_Great_Expanse.mp3"
+
+// colour maps of the bodies whose relief is generated (tools/make_body_maps.py; ids: terrain.cpp COLOR_ONLY)
+231 RCDATA "../assets/maps/mercury_color.jpg"
+232 RCDATA "../assets/maps/io_color.jpg"
+233 RCDATA "../assets/maps/europa_color.jpg"
+234 RCDATA "../assets/maps/ganymede_color.jpg"
+235 RCDATA "../assets/maps/callisto_color.jpg"
+236 RCDATA "../assets/maps/enceladus_color.jpg"
+237 RCDATA "../assets/maps/triton_color.jpg"
+238 RCDATA "../assets/maps/pluto_color.jpg"
+239 RCDATA "../assets/maps/charon_color.jpg"
+240 RCDATA "../assets/maps/ceres_color.jpg"
+241 RCDATA "../assets/maps/phobos_color.jpg"
+242 RCDATA "../assets/maps/jupiter_color.jpg"
+
+// credits of the data and licence notices of the linked libraries (tools/make_notices.py), shown in Settings
+401 RCDATA "../THIRD_PARTY_NOTICES.txt"
+
+// the night sky: the bright star catalogue and the Milky Way (tools/make_sky.py, assets/sky/SOURCES.txt)
+221 RCDATA "../assets/sky/stars.bin"
+222 RCDATA "../assets/sky/milkyway.jpg"
+
+// high-resolution tiles shown near the body (tools/make_detail_maps.py)
+211 RCDATA "../assets/maps/earth_color_hi.pak"
+212 RCDATA "../assets/maps/earth_height_hi.pak"
+213 RCDATA "../assets/maps/moon_color_hi.pak"
+214 RCDATA "../assets/maps/moon_height_hi.pak"
+215 RCDATA "../assets/maps/mars_color_hi.pak"
+216 RCDATA "../assets/maps/mars_height_hi.pak"
+
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "Astraum - space exploration simulator"
+            VALUE "FileVersion", "1.0.0"
+            VALUE "InternalName", "Astraum"
+            VALUE "OriginalFilename", "Astraum.exe"
+            VALUE "ProductName", "Astraum"
+            VALUE "ProductVersion", "1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
