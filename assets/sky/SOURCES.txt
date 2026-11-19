@@ -1,0 +1,15 @@
+Astraum night sky - sources
+================================
+
+Built by tools/make_sky.py.
+
+stars.bin     Yale Bright Star Catalogue, 5th revised edition (Hoffleit & Warren, 1991): the 9,096 stars with a
+              J2000 position and a V magnitude (the naked-eye sky, to about 6.5 mag), with their B-V colours.
+              ASCII edition distributed by the Harvard-Smithsonian Center for Astrophysics:
+              http://tdc-www.harvard.edu/catalogs/bsc5.html
+
+milkyway.jpg  NASA/Goddard Space Flight Center Scientific Visualization Studio, "Deep Star Maps 2020"
+              (https://svs.gsfc.nasa.gov/4851), the Milky Way background "milkyway_2020_8k.exr".
+              Credit: NASA/Goddard Space Flight Center Scientific Visualization Studio. Gaia DR2: ESA/Gaia/DPAC.
+              Equirectangular in equatorial J2000 coordinates (RA 12h at the left edge, RA increasing to the left),
+              tone-mapped to 8 bits.
