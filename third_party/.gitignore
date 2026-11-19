@@ -1,0 +1,5 @@
+# raylib: only what the build uses is kept (examples, IDE projects, the API parser and the logos are left out)
+/raylib/examples/
+/raylib/projects/
+/raylib/parser/
+/raylib/logo/
