@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Astraum application icon: a rocket climbing past a ringed world toward a bright star -->
+  <defs>
+    <radialGradient id="bg" cx="0.28" cy="0.22" r="1.0">
+      <stop offset="0" stop-color="#1f3b63"/>
+      <stop offset="0.5" stop-color="#0f1a30"/>
+      <stop offset="1" stop-color="#060a13"/>
+    </radialGradient>
+    <linearGradient id="planet" x1="0.12" y1="0.08" x2="0.88" y2="0.95">
+      <stop offset="0" stop-color="#8be0ff"/>
+      <stop offset="0.32" stop-color="#38bdf8"/>
+      <stop offset="0.68" stop-color="#1d4ed8"/>
+      <stop offset="1" stop-color="#0a1638"/>
+    </linearGradient>
+    <radialGradient id="terminator" cx="0.3" cy="0.28" r="0.9">
+      <stop offset="0.55" stop-color="#000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#020617" stop-opacity="0.75"/>
+    </radialGradient>
+    <linearGradient id="ringFront" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#818cf8"/>
+      <stop offset="0.5" stop-color="#a5f3fc"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="hull" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.6" stop-color="#e2e8f0"/>
+      <stop offset="1" stop-color="#94a3b8"/>
+    </linearGradient>
+    <linearGradient id="flame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff7d6"/>
+      <stop offset="0.25" stop-color="#fdba74"/>
+      <stop offset="0.65" stop-color="#f97316" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#f97316" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.35" stop-color="#bae6fd" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#38bdf8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="flameGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fb923c" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#fb923c" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="clipIcon">
+      <rect width="512" height="512" rx="112"/>
+    </clipPath>
+    <!-- halves of the ring, in the ring's own (rotated) frame -->
+    <clipPath id="backHalf"><rect x="0" y="0" width="600" height="312"/></clipPath>
+    <clipPath id="frontHalf"><rect x="0" y="312" width="600" height="300"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#clipIcon)">
+    <rect width="512" height="512" fill="url(#bg)"/>
+
+    <!-- distant stars -->
+    <g fill="#e0f2fe">
+      <circle cx="58" cy="232" r="3"/>
+      <circle cx="420" cy="78" r="3.5"/>
+      <circle cx="462" cy="168" r="2.5"/>
+      <circle cx="210" cy="56" r="2.5"/>
+      <circle cx="96" cy="420" r="2.5"/>
+      <circle cx="252" cy="160" r="2"/>
+      <circle cx="372" cy="472" r="2"/>
+      <circle cx="30" cy="330" r="2"/>
+    </g>
+
+    <!-- ring, back half (behind the planet) -->
+    <g transform="rotate(-20 300 312)">
+      <ellipse cx="300" cy="312" rx="206" ry="56" fill="none" stroke="#6366f1" stroke-opacity="0.55"
+               stroke-width="16" clip-path="url(#backHalf)"/>
+    </g>
+
+    <!-- planet -->
+    <circle cx="300" cy="312" r="120" fill="url(#planet)"/>
+    <path d="M214 270 C 258 252 300 286 352 268 C 380 258 404 266 418 276" fill="none" stroke="#bae6fd"
+          stroke-opacity="0.35" stroke-width="10" stroke-linecap="round"/>
+    <path d="M196 330 C 246 312 296 344 356 326 C 384 318 408 324 420 334" fill="none" stroke="#1e3a8a"
+          stroke-opacity="0.45" stroke-width="12" stroke-linecap="round"/>
+    <circle cx="300" cy="312" r="120" fill="url(#terminator)"/>
+    <circle cx="300" cy="312" r="120" fill="none" stroke="#7dd3fc" stroke-opacity="0.6" stroke-width="4"/>
+
+    <!-- ring, front half -->
+    <g transform="rotate(-20 300 312)">
+      <ellipse cx="300" cy="312" rx="206" ry="56" fill="none" stroke="url(#ringFront)"
+               stroke-width="16" clip-path="url(#frontHalf)"/>
+    </g>
+
+    <!-- rocket, climbing to the upper right -->
+    <g transform="translate(206 300) rotate(42)">
+      <ellipse cx="0" cy="150" rx="70" ry="90" fill="url(#flameGlow)"/>
+      <path d="M-24 84 C -20 140 -8 180 0 214 C 8 180 20 140 24 84 Z" fill="url(#flame)"/>
+      <path d="M-11 84 C -9 118 -4 140 0 160 C 4 140 9 118 11 84 Z" fill="#fffbeb" fill-opacity="0.9"/>
+      <path d="M-38 18 L -82 84 L -82 104 L -38 82 Z" fill="#818cf8"/>
+      <path d="M38 18 L 82 84 L 82 104 L 38 82 Z" fill="#6366f1"/>
+      <rect x="-26" y="70" width="52" height="18" rx="5" fill="#475569"/>
+      <path d="M0 -132 C 30 -100 40 -52 40 0 L 40 76 L -40 76 L -40 0 C -40 -52 -30 -100 0 -132 Z" fill="url(#hull)"/>
+      <path d="M0 -132 C 18 -112 28 -90 33 -66 L -33 -66 C -28 -90 -18 -112 0 -132 Z" fill="#38bdf8"/>
+      <circle cx="0" cy="-22" r="17" fill="#0f172a" stroke="#38bdf8" stroke-width="7"/>
+      <circle cx="-5" cy="-27" r="5" fill="#bae6fd" fill-opacity="0.8"/>
+      <path d="M-6 82 L 6 82 L 6 104 L -6 104 Z" fill="#334155"/>
+    </g>
+
+    <!-- guiding star -->
+    <g transform="translate(118 116)">
+      <circle r="62" fill="url(#glow)"/>
+      <path d="M0 -50 C 6 -14 14 -6 50 0 C 14 6 6 14 0 50 C -6 14 -14 6 -50 0 C -14 -6 -6 -14 0 -50 Z" fill="#ffffff"/>
+    </g>
+  </g>
+</svg>

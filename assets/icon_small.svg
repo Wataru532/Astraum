@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Simplified Astraum icon for 16-24 px: bold rocket, planet limb, one star -->
+  <defs>
+    <radialGradient id="bg" cx="0.28" cy="0.22" r="1.0">
+      <stop offset="0" stop-color="#21416d"/>
+      <stop offset="1" stop-color="#0a1222"/>
+    </radialGradient>
+    <linearGradient id="planet" x1="0.1" y1="0.05" x2="0.8" y2="0.9">
+      <stop offset="0" stop-color="#7dd3fc"/>
+      <stop offset="0.45" stop-color="#2b8ef0"/>
+      <stop offset="1" stop-color="#1e3a8a"/>
+    </linearGradient>
+    <linearGradient id="flame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff1c2"/>
+      <stop offset="0.4" stop-color="#fb923c"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+    <clipPath id="clipIcon"><rect width="512" height="512" rx="112"/></clipPath>
+  </defs>
+  <g clip-path="url(#clipIcon)">
+    <rect width="512" height="512" fill="url(#bg)"/>
+    <circle cx="400" cy="420" r="190" fill="url(#planet)"/>
+    <g transform="translate(236 252) rotate(42) scale(1.45)">
+      <path d="M-26 78 C -22 126 -10 160 0 190 C 10 160 22 126 26 78 Z" fill="url(#flame)"/>
+      <path d="M-40 16 L -86 86 L -86 106 L -40 84 Z" fill="#a5b4fc"/>
+      <path d="M40 16 L 86 86 L 86 106 L 40 84 Z" fill="#818cf8"/>
+      <path d="M0 -132 C 32 -100 42 -52 42 0 L 42 80 L -42 80 L -42 0 C -42 -52 -32 -100 0 -132 Z" fill="#ffffff"/>
+      <circle cx="0" cy="-26" r="20" fill="#0f172a"/>
+    </g>
+    <path transform="translate(112 112)" d="M0 -64 C 8 -18 18 -8 64 0 C 18 8 8 18 0 64 C -8 18 -18 8 -64 0 C -18 -8 -8 -18 0 -64 Z" fill="#ffffff"/>
+  </g>
+</svg>
