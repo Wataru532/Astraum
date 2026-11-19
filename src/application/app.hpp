@@ -38,6 +38,7 @@ struct App {
     bool settingsOpen = false;
     int lang = 0;           // i18n::Lang
     int textSize = 1;       // index into TEXT_SCALES
+    int uiSize = 2;         // index into UI_SIZES (GUI size, 100 %)
     bool reverseZoom = false;
     int volumePct = 75;     // effects volume [%] (0 = off)
     bool music = true;      // background music now and then
@@ -69,6 +70,7 @@ struct App {
 extern const float TEXT_POINTS[4];
 extern const float TEXT_SCALES[4];
 extern const char* TEXT_SCALE_NAMES[4];
+extern const float UI_SIZES[6];          // GUI size factors (Settings)
 extern const float VOLUME_STEPS[5]; // (the old five volume steps: prefs written before the sliders)
 extern const int FPS_LIMITS[4];
 

@@ -16,6 +16,7 @@ const float TEXT_POINTS[4] = {9.0f, 11.0f, 13.0f, 15.0f};
 const float TEXT_SCALES[4] = {9.0f * 96 / 72 / 14, 11.0f * 96 / 72 / 14, 13.0f * 96 / 72 / 14, 15.0f * 96 / 72 / 14};
 const char* TEXT_SCALE_NAMES[4] = {"Small", "Standard", "Large", "Extra large"};
 const float VOLUME_STEPS[5] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+const float UI_SIZES[6] = {0.75f, 0.9f, 1.0f, 1.1f, 1.25f, 1.5f};
 const int FPS_LIMITS[4] = {30, 60, 120, 0};
 
 void loadPrefs(App& app) {
@@ -45,6 +46,7 @@ void loadPrefs(App& app) {
         if (key == "adaptive") app.adaptiveDetail = v != 0;
         if (key == "belts") app.showBelts = v != 0;
         if (key == "fullscreen") app.fullscreen = v != 0;
+        if (key == "uisize" && v >= 0 && v < 6) app.uiSize = v;
         if (key == "tutorials2" && v >= 0) app.tutorialsDone = (unsigned)v & 0xFFFFu; // (order of 2026-11-12; older records dropped)
     }
     // volumes in per cent; a file from before the sliders keeps its step
@@ -64,7 +66,7 @@ void savePrefs(const App& app) {
     if (g_prefsReadOnly) return;
     std::ofstream f(app.dataDir + "\\prefs.txt");
     f << "version 2\nlang " << app.lang << "\ntextsize " << app.textSize << "\nreversezoom " << (app.reverseZoom ? 1 : 0) << "\nsfxpct "
-      << std::clamp(app.volumePct, 0, 100) << "\nmusic " << (app.music ? 1 : 0) << "\nmusicpct " << std::clamp(app.musicPct, 0, 100) << "\nterrainq " << app.terrainQuality << "\ndetailrange " << std::clamp(app.detailRange, 50, 400) << "\npbr " << (app.physicalShading ? 1 : 0) << "\nautosave " << app.autosaveMin << "\nfpslimit " << app.fpsLimit << "\nshowfps " << (app.showFps ? 1 : 0) << "\nadaptive " << (app.adaptiveDetail ? 1 : 0) << "\nbelts " << (app.showBelts ? 1 : 0) << "\nfullscreen " << (app.fullscreen ? 1 : 0)
+      << std::clamp(app.volumePct, 0, 100) << "\nmusic " << (app.music ? 1 : 0) << "\nmusicpct " << std::clamp(app.musicPct, 0, 100) << "\nterrainq " << app.terrainQuality << "\ndetailrange " << std::clamp(app.detailRange, 50, 400) << "\npbr " << (app.physicalShading ? 1 : 0) << "\nautosave " << app.autosaveMin << "\nfpslimit " << app.fpsLimit << "\nshowfps " << (app.showFps ? 1 : 0) << "\nadaptive " << (app.adaptiveDetail ? 1 : 0) << "\nbelts " << (app.showBelts ? 1 : 0) << "\nfullscreen " << (app.fullscreen ? 1 : 0) << "\nuisize " << app.uiSize
       << "\ntutorials2 " << (app.tutorialsDone & 0xFFFFu) << "\n";
 }
 

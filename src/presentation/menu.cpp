@@ -259,6 +259,24 @@ void settingsModal(App& app) {
         }
     }
     y += 50;
+    text("GUI SIZE", lx, y, 13, col::dim, true);
+    y += 24;
+    {
+        float cx = lx;
+        for (int i = 0; i < 6; i++) {
+            std::string label = std::to_string((int)std::lround(UI_SIZES[i] * 100)) + " %";
+            float w = measure(label, 14, true).x + 22;
+            if (cx + w > lx + colW) { cx = lx; y += 38; }
+            if (chip({cx, y, w, 32}, label, app.uiSize == i)) {
+                app.uiSize = i;
+                ui::setUserScale(UI_SIZES[i]);
+                savePrefs(app);
+            }
+            cx += w + 8;
+        }
+    }
+    y = wrap("The size of the whole interface (panels, buttons, text) on top of the display scaling. A large GUI is limited by the window size.",
+             lx, y + 38, colW, 13, col::faint) + 12;
     if (toggle({lx, y, colW, 32}, "Reverse zoom direction", app.reverseZoom)) {
         nav::setReverseZoom(app.reverseZoom);
         savePrefs(app);

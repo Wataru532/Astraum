@@ -15,6 +15,8 @@
 #include "session.hpp"
 #include "storage.hpp"
 #include "navguide.hpp"
+#include "mission.hpp"
+#include <chrono>
 #include "achieve.hpp"
 #include "tutorial.hpp"
 #include "crash.hpp"
@@ -111,6 +113,9 @@ struct AT {
     double rwCrash = -1, rwLaunch = 0;
     Vec3d rcsV0, rcsR0;
     double rcsM0 = 0, rcsMono0 = 0, rcsT0 = 0;
+    // --missiontest
+    double t0 = 0;
+    float sc0 = 1;
 } T;
 
 // key bindings: defaults asked for (F1 HUD, F2 screenshot, mouse back / forward undo / redo), file
@@ -4866,6 +4871,216 @@ bool baseTestStep(App& app) {
     return true;
 }
 
+
+// ------------------------------------------------------------------ mission guidance, exploration, map speed (--missiontest)
+// the plan toward the Moon from the pad to a lunar orbit, each burn carried out on rails and checked by the
+// prediction; an interplanetary plan to Mars (window, departure, correction, encounter); the exploration log
+// (a rover started on the Moon is no landing, old saves repaired); the cost of the encounter prediction on a
+// heliocentric orbit; the GUI size
+bool missionTestStep(App& app) {
+    World& W = app.world;
+    const Universe& U = W.U;
+    static int bad = 0;
+    auto check = [&](bool ok, const std::string& what) {
+        std::fprintf(T.log, "missiontest: %s -> %s\n", what.c_str(), ok ? "ok" : "FAIL");
+        bad += !ok;
+    };
+    int earth = U.find("Earth"), moon = U.find("Moon"), mars = U.find("Mars"), sun = U.find("Sun");
+    auto plan = [&](Vessel& v, int target) {
+        mission::invalidate();
+        return mission::compute(W, v, target);
+    };
+    // carry the vessel on rails to simulation time t (no other vessel matters here)
+    auto coastTo = [&](Vessel& v, double t) {
+        keplerPropagate(v.r, v.v, U.bodies[v.ref].GM, t - W.t);
+        W.t = t;
+        W.refreshStates();
+    };
+    auto names = [&](mission::Phase ph) {
+        static const char* N[] = {"None", "Message", "Prelaunch", "Ascent", "Departure", "Transfer", "Arrival", "InOrbit"};
+        return N[(int)ph];
+    };
+    if (T.frames == 2) {
+        bad = 0;
+        W.newGame(Settings{});
+        app.gameStarted = true;
+        Design d = builtinTemplates()[0];
+        app.design = d;
+        app.lastLaunched = craftFromDesign(d);
+        int vi = W.launch(app.lastLaunched);
+        Vessel& v = W.vessels[vi];
+        v.target = moon;
+        mission::Plan p = plan(v, moon);
+        std::fprintf(T.log, "missiontest: on the pad, target Moon: %s, window in %.0f s, parking %.0f km\n", names(p.phase), p.tLaunch - W.t, p.parkAlt / 1e3);
+        check(p.phase == mission::Phase::Prelaunch && p.tLaunch > W.t && p.tLaunch < W.t + 1.3 * DAY, "Moon: a launch window within a day");
+        app.screen = Screen::Flight;
+        flightOnEnter(app);
+        flightDebugView(2.0, 0.15, 90, Vec3d{0, 0, 20});
+        return true;
+    }
+    if (T.frames == 6) {
+        shot("60_mission_prelaunch.png");
+        Vessel& v = *W.activeVessel();
+        // as a pilot would: lift off at the launch window (the ascent itself is flown in the other tests)
+        {
+            mission::Plan pl = plan(v, moon);
+            if (pl.tLaunch > W.t) {
+                W.t = pl.tLaunch;
+                W.refreshStates();
+                v.r = W.U.bodyRot(v.ref, W.t) * v.landPos;
+            }
+        }
+        W.placeInOrbit(v, ascentTargetAlt(U.bodies[earth]));
+        mission::Plan p = plan(v, moon);
+        std::fprintf(T.log, "missiontest: parking orbit: %s, burn in %.0f s, dv %.0f m/s, arrival in %.1f d\n", names(p.phase), p.tBurn - W.t, p.dv,
+                     (p.tArrive - W.t) / DAY);
+        check(p.phase == mission::Phase::Departure && p.dv > 2900 && p.dv < 3400 && p.tBurn >= W.t, "Moon: departure burn of ~3.1 km/s");
+        flightDebugView(2.0, 0.25, 40, Vec3d{});
+        return true;
+    }
+    if (T.frames == 9) {
+        shot("61_mission_departure.png");
+        Vessel& v = *W.activeVessel();
+        mission::Plan p = plan(v, moon);
+        coastTo(v, p.tBurn);
+        mission::Plan pNow = plan(v, moon); // (at the burn point: still "burn now", not the next pass)
+        std::fprintf(T.log, "missiontest: at the burn point: burn in %.0f s, dv %.0f m/s\n", pNow.tBurn - W.t, pNow.dv);
+        check(pNow.tBurn - W.t < 5 && std::fabs(pNow.dv - p.dv) < 120, "Moon: at the burn point the plan says burn now");
+        v.v += pNow.burn;
+        mission::Plan q = plan(v, moon);
+        std::fprintf(T.log, "missiontest: after the departure burn: %s, encounter %d in %.1f d, periapsis %.0f km\n", names(q.phase), (int)q.encounter,
+                     (q.tEncounter - W.t) / DAY, q.encPe / 1e3);
+        check(q.phase == mission::Phase::Transfer && q.encounter && q.encPe > 5e3 && q.encPe < 300e3, "Moon: the burn brings an encounter with a low periapsis");
+        // into the Moon's sphere of influence, then the capture
+        Encounter e;
+        if (q.encounter && predictEncounter(U, v.ref, v.r, v.v, W.t, e) && e.body == moon) {
+            W.t += e.tEntry;
+            W.refreshStates();
+            v.ref = moon;
+            v.r = e.r;
+            v.v = e.v;
+            mission::Plan a = plan(v, moon);
+            std::fprintf(T.log, "missiontest: at the Moon: %s, capture in %.0f s, dv %.0f m/s, periapsis %.0f km\n", names(a.phase), a.tBurn - W.t, a.dv, a.pe / 1e3);
+            check(a.phase == mission::Phase::Arrival && a.dv > 300 && a.dv < 1500, "Moon: a capture burn at periapsis");
+            coastTo(v, a.tBurn);
+            a = plan(v, moon);
+            v.v += a.burn;
+            mission::Plan o = plan(v, moon);
+            std::fprintf(T.log, "missiontest: after the capture: %s, %.0f x %.0f km\n", names(o.phase), o.pe / 1e3, o.ap / 1e3);
+            check(o.phase == mission::Phase::InOrbit, "Moon: in orbit after the capture");
+        } else check(false, "Moon: the encounter state");
+        return true;
+    }
+    if (T.frames == 12) {
+        // Mars from a parking orbit around Earth
+        W.newGame(Settings{});
+        int vi = W.launch(app.lastLaunched);
+        Vessel& v = W.vessels[vi];
+        W.placeInOrbit(v, ascentTargetAlt(U.bodies[earth]));
+        v.target = mars;
+        mission::Plan p = plan(v, mars);
+        std::fprintf(T.log, "missiontest: to Mars: %s, window in %.0f d, burn in %.1f d, dv %.0f m/s, flight %.0f d\n", names(p.phase),
+                     (p.tWindow - W.t) / DAY, (p.tBurn - W.t) / DAY, p.dv, (p.tArrive - p.tBurn) / DAY);
+        check(p.phase == mission::Phase::Departure && p.dv > 3300 && p.dv < 6000 && p.tWindow < W.t + 800 * DAY, "Mars: a transfer window and an ejection burn");
+        coastTo(v, p.tBurn);
+        p = plan(v, mars);
+        v.v += p.burn;
+        // out of Earth's sphere of influence: on the Sun's patched conic
+        Conic c = stateToConic(v.r, v.v, U.bodies[earth].GM);
+        double cosExit = (c.p / U.bodies[earth].soi - 1) / c.e;
+        double tExit = std::fabs(cosExit) <= 1 ? timeToTrueAnomaly(c, std::acos(cosExit)) : -1;
+        check(c.e > 1 && tExit > 0, "Mars: the ejection escapes Earth");
+        {
+            mission::Plan out = plan(v, mars);
+            check(out.phase == mission::Phase::Transfer, "Mars: just after the ejection the plan is the way out (no capture burn)");
+        }
+        if (tExit > 0) {
+            coastTo(v, W.t + tExit + 60);
+            Vec3d er, ev;
+            er = U.relPos(W.states, earth, sun);
+            ev = U.relVel(W.states, earth, sun);
+            v.ref = sun;
+            v.r += er;
+            v.v += ev;
+            mission::Plan t = plan(v, mars);
+            std::fprintf(T.log, "missiontest: around the Sun: %s, encounter %d, correction %.0f m/s\n", names(t.phase), (int)t.encounter, t.dv);
+            if (!t.encounter && t.tBurn >= 0) {
+                coastTo(v, std::max(W.t, t.tBurn));
+                t = plan(v, mars);
+                v.v += t.burn;
+                t = plan(v, mars);
+            }
+            std::fprintf(T.log, "missiontest: after the correction: encounter %d in %.0f d, periapsis %.0f km\n", (int)t.encounter, (t.tEncounter - W.t) / DAY,
+                         t.encPe / 1e3);
+            check(t.encounter, "Mars: an encounter after the course correction");
+            // the encounter prediction on a heliocentric orbit (the map called it every frame)
+            auto t0 = std::chrono::steady_clock::now();
+            Encounter e;
+            for (int k = 0; k < 20; k++) predictEncounter(U, v.ref, v.r, v.v, W.t, e);
+            double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 20;
+            std::fprintf(T.log, "missiontest: encounter prediction around the Sun: %.2f ms\n", ms);
+            check(ms < 8, "the heliocentric encounter prediction is cheap");
+        }
+        app.screen = Screen::Flight;
+        flightOnEnter(app);
+        flightDebugSetMap(true, 4e11);
+        return true;
+    }
+    if (T.frames == 14) T.t0 = GetTime();
+    if (T.frames == 44) {
+        double frame = (GetTime() - T.t0) / 30 * 1000;
+        std::fprintf(T.log, "missiontest: map view with a heliocentric vessel: %.1f ms per frame\n", frame);
+        check(frame < 60, "the map stays smooth with a heliocentric vessel");
+        shot("62_mission_map_heliocentric.png");
+        // the same map with a vessel in a low Earth orbit (the reference)
+        W.newGame(Settings{});
+        int vi = W.launch(app.lastLaunched);
+        W.placeInOrbit(W.vessels[vi], 200e3);
+        flightOnEnter(app);
+        flightDebugSetMap(true, 4e11);
+        return true;
+    }
+    if (T.frames == 48) T.t0 = GetTime();
+    if (T.frames == 78) {
+        std::fprintf(T.log, "missiontest: map view with a vessel in low Earth orbit (reference): %.1f ms per frame\n", (GetTime() - T.t0) / 30 * 1000);
+        flightDebugSetMap(false, 0);
+        // exploration: a rover started on the Moon is no landing there; an old save's false mark is repaired
+        W.newGame(Settings{});
+        Craft rover = craftNamed("Lunar Rover");
+        W.launchAircraft(rover, moon);
+        for (int k = 0; k < 20; k++) W.update(0.05);
+        check(!(W.explored[moon] & 4), "a rover started on the Moon does not count as a landing");
+        W.explored[moon] |= 4 | 1;
+        World w2;
+        bool ok = w2.deserialize(W.serialize());
+        check(ok && !(w2.explored[moon] & 4) && (w2.explored[earth] & 4), "an old false landing mark is cleared on load");
+        // the GUI size
+        app.screen = Screen::Menu;
+        app.settingsOpen = true;
+        T.sc0 = ui::scale();
+        ui::setUserScale(1.25f);
+        return true;
+    }
+    if (T.frames == 81) {
+        float s1 = ui::scale();
+        std::fprintf(T.log, "missiontest: GUI scale %.3f -> %.3f at 125 %%\n", T.sc0, s1);
+        check(s1 > T.sc0 * 1.02f || s1 >= std::min(GetScreenWidth() / 1100.0f, GetScreenHeight() / 680.0f) - 0.01f, "the GUI size setting enlarges the interface");
+        shot("63_gui_125.png");
+        ui::setUserScale(0.75f);
+        return true;
+    }
+    if (T.frames == 84) {
+        float s2 = ui::scale();
+        check(s2 < T.sc0 * 0.98f, "the GUI size setting shrinks the interface");
+        shot("64_gui_75.png");
+        ui::setUserScale(1.0f);
+        app.settingsOpen = false;
+        std::fprintf(T.log, "missiontest: %s (%d failed)\n", bad ? "FAIL" : "all ok", bad);
+        return false;
+    }
+    return true;
+}
+
 // ------------------------------------------------------------------ rovers (--rovertest)
 // the lunar rover at Hadley and the Mars rover at Jezero: drive (W), steer (D), stop and park (keys
 // released), drive off again, reverse (S); speed, heading, battery and the warp allowed while rolling
@@ -5246,6 +5461,7 @@ bool autotestInit(App& app, int argc, char** argv) {
         if (std::string(argv[i]) == "--realtest") T.phase = 440;
         if (std::string(argv[i]) == "--uitest") T.phase = 450;
         if (std::string(argv[i]) == "--basetest") T.phase = 490;
+        if (std::string(argv[i]) == "--missiontest") T.phase = 500;
         if (std::string(argv[i]) == "--solartest") T.phase = 460;
         if (std::string(argv[i]) == "--startest") T.phase = 470;
         if (std::string(argv[i]) == "--bodytest") T.phase = 480;
@@ -6696,6 +6912,9 @@ bool autotestStep(App& app) {
         break;
     case 490:
         if (!baseTestStep(app)) T.phase = 9;
+        break;
+    case 500:
+        if (!missionTestStep(app)) T.phase = 9;
         break;
     case 9:
         logState(app, "end");

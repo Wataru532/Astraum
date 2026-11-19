@@ -224,6 +224,19 @@ std::string World::launchSiteName() const {
     return LAUNCH_SITES[std::clamp(settings.launchSite, 0, LAUNCH_SITE_COUNT - 1)].name;
 }
 
+void World::repairExplored() {
+    int earth = U.find("Earth");
+    for (int b = 0; b < (int)explored.size() && b < U.count(); b++) {
+        if (b == earth || !(explored[b] & 4)) continue;
+        bool evidence = achievements.count("land:" + U.bodies[b].name) > 0;
+        for (const Vessel& v : vessels)
+            if (b < 64 && (v.landedOn >> b & 1ull) && v.earthLaunch) evidence = true;
+        for (const SurfaceBase& sb : bases)
+            if (sb.body == b) evidence = true;
+        if (!evidence) explored[b] &= ~4u;
+    }
+}
+
 int World::launchSiteSlots() const { return LAUNCH_SITE_COUNT + (int)launchBaseIds().size(); }
 
 int World::launchSiteSlot() const {
@@ -342,16 +355,25 @@ bool predictEncounter(const Universe& U, int ref, Vec3d r, Vec3d v, double t0, E
     horizon = std::min(horizon, 2 * YEAR);
     const int N = 400;
     const double dt = horizon / N;
+    // only the bodies the test needs: the chain from the root down to `ref` (their order: parents first), then
+    // the children of `ref`. (All the bodies relevant to `ref` once per child and step made a heliocentric orbit -
+    // 17 children of the Sun - cost a quarter of a million Kepler solutions per call: the map stalled.)
+    std::vector<int> need;
+    for (int b = ref; b >= 0; b = U.bodies[b].parent) need.insert(need.begin(), b);
+    need.insert(need.end(), rb.children.begin(), rb.children.end());
     std::vector<BodyState> S;
+    auto statesAt = [&](double tRel) { U.computeStatesFor(t0 + tRel, need, S); };
+    auto insideNow = [&](int ch, const Vec3d& p) { return len(p - U.relPos(S, ch, ref)) < U.bodies[ch].soi; };
     auto inside = [&](int ch, const Vec3d& p, double tRel) {
-        U.computeStatesFor(t0 + tRel, U.relevant[ref], S);
-        return len(p - U.relPos(S, ch, ref)) < U.bodies[ch].soi;
+        statesAt(tRel);
+        return insideNow(ch, p);
     };
     for (int k = 1; k <= N; k++) {
         Vec3d r0 = r, v0 = v;
         keplerPropagate(r, v, rb.GM, dt);
+        statesAt(k * dt); // (once per step for all the children)
         for (int ch : rb.children) {
-            if (!inside(ch, r, k * dt)) continue;
+            if (!insideNow(ch, r)) continue;
             // the crossing lies inside this step
             double lo = 0, hi = dt;
             Vec3d rr = r, vv = v;
@@ -2609,13 +2631,14 @@ bool World::rewind(double seconds) {
 
 bool World::startWarpTo(double tTarget) {
     Vessel* v = activeVessel();
-    if (!v || v->destroyed || v->landed || !(tTarget > t + 1.0) || !std::isfinite(tTarget)) return false;
+    if (!v || v->destroyed || !(tTarget > t + 1.0) || !std::isfinite(tTarget)) return false;
     if (thrustPossible(*this, *v)) {
         toast("Stop the engines before warping to a point", {255, 200, 120, 255});
         return false;
     }
     warpTo = tTarget;
     warpToRef = v->ref;
+    warpToGround = v->landed; // (on the pad: waiting for a launch window)
     toast(trf("Warping to the selected point ({0})", formatTime(tTarget - t)), {150, 200, 255, 255});
     return true;
 }
@@ -2692,7 +2715,7 @@ void World::update(double realDt) {
         // warp to a point: the fastest level that still takes ~2.5 s to cover the rest (it slows down
         // on the approach), never above what the situation allows
         Vessel* a = activeVessel();
-        if (!a || a->destroyed || a->landed) cancelWarpTo("Warp to point cancelled");
+        if (!a || a->destroyed || a->landed != warpToGround) cancelWarpTo("Warp to point cancelled");
         else if (a->ref != warpToRef) cancelWarpTo("Warp to point cancelled: the vessel left the sphere of influence");
         else if (thrustPossible(*this, *a)) cancelWarpTo("Warp to point cancelled: engines are firing");
         else {
@@ -3029,7 +3052,9 @@ void World::update(double realDt) {
     bool earned = checkAchievements();
     // exploration log
     for (auto& v : vessels) {
-        if (v.destroyed) continue;
+        // only what was flown there counts: a rover started on the Moon from the CAD designer, a craft placed in
+        // orbit or a spent stage is no exploration (the same rule as the achievements, fun modes allowed)
+        if (v.destroyed || !v.earthLaunch || v.debris) continue;
         int b = v.ref;
         unsigned before = explored[b];
         explored[b] |= 1;
@@ -4385,6 +4410,7 @@ bool World::deserialize(const std::string& text) {
     if (w.active < -1) w.active = -1;
     w.nextId = std::clamp(w.nextId, (int)w.vessels.size() + 1, 1 << 24);
     for (const SurfaceBase& b : w.bases) w.nextBaseId = std::max(w.nextBaseId, b.id + 1);
+    w.repairExplored();
     w.vessels.reserve(w.vessels.size() + 64);
     w.warpIndex = 0;
     w.refreshStates();

@@ -19,6 +19,7 @@
 #include "features.hpp"
 #include "achieve.hpp"
 #include "navguide.hpp"
+#include "mission.hpp"
 #include <deque>
 #include <set>
 
@@ -1880,6 +1881,9 @@ void enginesPanel(App& app, Vessel& av, Rectangle sr) {
 
 // ------------------------------------------------------------------ navigation panel (rendezvous and docking guidance)
 navg::Guidance g_nav;
+mission::Plan g_mission;    // the guidance toward the target body (mission panel)
+int g_missionTarget = -1;   // the target body it was made for (a new target opens the panel again)
+bool missionOpen = true;
 const Vessel* navTargetOf(const World& W, const Vessel& a) {
     for (const Vessel& o : W.vessels)
         if (o.id == a.targetVessel && !o.destroyed) return &o;
@@ -1894,6 +1898,16 @@ void updateNav(App& app) {
     const Vessel* t = navTargetOf(W, *a);
     if (!t || a->destroyed || W.hyper.active) {
         a->navBurn = {};
+        // a target body: the mission guidance from the pad to an orbit around it (SAS "Burn" follows its burns)
+        g_mission = {};
+        if (!t && !a->destroyed && !W.hyper.active && a->target >= 0) {
+            if (a->target != g_missionTarget) {
+                g_missionTarget = a->target;
+                missionOpen = true;
+            }
+            g_mission = mission::compute(W, *a, a->target);
+            a->navBurn = g_mission.burn;
+        } else g_missionTarget = -1;
         return;
     }
     g_nav = navg::compute(W, *a, *t, GetTime(), 1.0);
@@ -2001,6 +2015,165 @@ void navPanel(App& app, Vessel& av) {
         y += 21;
     }
     wrap(hint, r.x + 16, y, w, 13, g.mode == Mode::Message ? col::warn : col::faint);
+    g_navBottom = r.y + r.height;
+}
+
+
+// the mission panel: the way to an orbit around the target body, one step at a time (mission.hpp)
+void missionPanel(App& app, Vessel& av) {
+    World& W = app.world;
+    const Universe& U = W.U;
+    const mission::Plan& m = g_mission;
+    if (!missionOpen || av.target < 0 || m.phase == mission::Phase::None) return;
+    using mission::Phase;
+    float SW = ui::SW();
+    Rectangle r{SW - 704, 282, 340, 0};
+    float w = r.width - 32;
+    const Body& tb = U.bodies[av.target];
+    std::string goal = m.goal >= 0 && m.goal != av.target ? U.bodies[m.goal].name : std::string();
+    Color burnC{251, 146, 60, 255};
+    // the lines of this phase: (key, value, colour); the title; the hint; the buttons
+    struct Row { std::string k, v; Color c; };
+    std::vector<Row> rows;
+    std::string title, hint;
+    Color titleC = col::text;
+    auto kv = [&](const std::string& k, const std::string& v, Color c = col::text) { rows.push_back({k, v, c}); };
+    double now = W.t;
+    auto burnTitle = [&](const char* what) {
+        double dt = m.tBurn - now;
+        if (dt > 1) title = trf(what, formatTime(dt));
+        else {
+            title = trf("Burn now  ·  {0} left", fmt("%.0f m/s", m.dv));
+            titleC = burnC;
+        }
+    };
+    enum Btn { NONE = 0, B_WARP_LAUNCH = 1, B_ASCENT = 2, B_BURN = 4, B_WARP_BURN = 8, B_WARP_ENC = 16 };
+    int btns = NONE;
+    switch (m.phase) {
+    case Phase::Message:
+        title = tr("No plan");
+        hint = tr(m.message);
+        break;
+    case Phase::Prelaunch:
+        if (m.tLaunch < 0) title = tr("Launch any time");
+        else if (m.tLaunch - now > 30) title = trf(m.transferWindow ? "Transfer window in {0}" : "Launch window in {0}", formatTime(m.tLaunch - now));
+        else {
+            title = tr("Launch now");
+            titleC = col::good;
+        }
+        if (m.tLaunch >= 0) kv(m.transferWindow ? "Window opens" : "Lift-off", formatDate(m.tLaunch));
+        kv("Parking orbit", formatDist(m.parkAlt));
+        kv("Heading", tr("90° (due east)"));
+        if (m.tArrive > 0) kv("Arrival (planned)", formatDate(m.tArrive));
+        hint = m.transferWindow ? tr("Launch on the day of the window into the parking orbit; the panel then gives the departure burn.")
+                                : tr("At the window, lift off with SAS Ascent: the orbit plane then passes under the target.");
+        if (m.tLaunch - now > 60) btns |= B_WARP_LAUNCH;
+        btns |= B_ASCENT;
+        break;
+    case Phase::Ascent:
+        title = trf("Climbing to a {0} parking orbit", formatDist(m.parkAlt));
+        kv("Apoapsis", m.ap >= 0 ? formatDist(m.ap) : tr("escape"));
+        kv("Periapsis", formatDist(m.pe), m.pe < 0 ? col::warn : col::text);
+        hint = tr("SAS Ascent flies the gravity turn, coasts to the apoapsis and makes the orbit insertion burn. Staging is yours.");
+        btns |= B_ASCENT;
+        break;
+    case Phase::Departure:
+        burnTitle(m.correction ? "Course correction in {0}" : "Departure burn in {0}");
+        kv("Velocity change", fmt("%.0f m/s", m.dv), burnC);
+        if (m.tWindow > now + 600) kv("Transfer window", trf("in {0}", formatTime(m.tWindow - now)));
+        if (m.tArrive > 0) kv("Flight time", formatTime(m.tArrive - std::max(now, m.tBurn)));
+        kv("Orbit", formatDist(m.pe) + "  ×  " + (m.ap >= 0 ? formatDist(m.ap) : tr("escape")));
+        hint = tr("Turn along the orange burn marker (SAS Burn), light the engines at the time and burn until the velocity change left is zero.");
+        btns |= B_BURN | B_WARP_BURN;
+        break;
+    case Phase::Transfer:
+        if (m.encounter) {
+            title = trf("Encounter with {0} in {1}", tr(U.bodies[m.goal].name), formatTime(m.tEncounter - now));
+            kv("Periapsis there", m.encPe < 0 ? tr("IMPACT") : formatDist(m.encPe), m.impact ? col::warn : col::good);
+            btns |= B_WARP_ENC;
+        } else if (m.tBurn >= 0) {
+            burnTitle("Course correction in {0}");
+            kv("Velocity change", fmt("%.1f m/s", m.dv), burnC);
+            if (m.tArrive > 0) kv("Arrival (planned)", formatDate(m.tArrive));
+            btns |= B_BURN | B_WARP_BURN;
+        } else title = tr("Coasting");
+        hint = m.message.empty() ? tr("Coast on (time warp is safe); the panel gives the capture burn on arrival.") : tr(m.message);
+        break;
+    case Phase::Arrival:
+        if (m.tBurn >= 0) {
+            burnTitle("Capture burn in {0}");
+            kv("Velocity change (retrograde)", fmt("%.0f m/s", m.dv), burnC);
+        } else title = tr("Arriving");
+        kv("Periapsis", formatDist(m.pe), m.impact ? col::warn : col::text);
+        hint = m.message.empty() ? tr("Burn retrograde at the periapsis (SAS Burn) to stay in orbit.") : tr(m.message);
+        if (m.tBurn >= 0) btns |= B_BURN | B_WARP_BURN;
+        break;
+    case Phase::InOrbit:
+        title = trf("In orbit around {0}", tr(tb.name));
+        titleC = col::good;
+        kv("Apoapsis", formatDist(m.ap));
+        kv("Periapsis", formatDist(m.pe));
+        hint = tr("Mission complete: the orbit is above the air and the relief.");
+        break;
+    default: break;
+    }
+    if (m.phase != Phase::Message && !m.message.empty() && m.phase != Phase::Transfer && m.phase != Phase::Arrival) hint = tr(m.message) + "  " + hint;
+    bool needIgnite = !av.ignited && (btns & B_BURN) && m.tBurn - now < 30;
+    float lw = measure(hint, 13).x;
+    float hintH = hint.empty() ? 0 : std::ceil(std::max(lw, 1.f) / w * 1.08f) * 18 + 6;
+    int nBtnRows = (btns & (B_WARP_LAUNCH | B_ASCENT | B_BURN | B_WARP_BURN | B_WARP_ENC)) ? 1 : 0;
+    r.height = 38 + 26 + (goal.empty() ? 0 : 20) + rows.size() * 21 + nBtnRows * 44 + (needIgnite ? 21 : 0) + hintH + 8;
+    panel(r);
+    float y = r.y + 12;
+    text("MISSION", r.x + 16, y, 13, col::dim, true);
+    textR(fit(tr(tb.name), r.width - 170, 13, true), r.x + r.width - 50, y, 13, col::accent, true);
+    if (iconButton({r.x + r.width - 42, r.y + 6, 30, 28}, Icon::Close)) {
+        missionOpen = false;
+        return;
+    }
+    y += 26;
+    text(fit(title, w, 15, true), r.x + 16, y, 15, titleC, true);
+    y += 26;
+    if (!goal.empty()) {
+        text(fit(trf("On the way: {0} first", tr(goal)), w, 13), r.x + 16, y, 13, col::dim);
+        y += 20;
+    }
+    for (const Row& rw : rows) {
+        text(rw.k, r.x + 16, y, 13, col::dim);
+        textR(rw.v, r.x + r.width - 16, y, 13, rw.c, true);
+        y += 21;
+    }
+    if (nBtnRows) {
+        float bw = (r.width - 40) / 2, bx = r.x + 16;
+        auto slot = [&]() {
+            Rectangle b{bx, y + 4, bw, 32};
+            bx += bw + 8;
+            return b;
+        };
+        if (btns & B_ASCENT) {
+            if (button(slot(), "SAS Ascent", av.sas == SAS::Ascent, true, Icon::Rocket)) av.sas = av.sas == SAS::Ascent ? SAS::Stability : SAS::Ascent;
+        }
+        if (btns & B_WARP_LAUNCH) {
+            if (button(slot(), "Warp to window", false, W.warpTo < 0, Icon::Forward)) W.startWarpTo(m.tLaunch - 20);
+        }
+        if (btns & B_BURN) {
+            if (button(slot(), "SAS Burn", av.sas == SAS::Burn, true)) av.sas = av.sas == SAS::Burn ? SAS::Stability : SAS::Burn;
+        }
+        if (btns & B_WARP_BURN) {
+            if (button(slot(), "Warp to burn", false, m.tBurn - now > 90 && W.warpTo < 0, Icon::Forward)) W.startWarpTo(m.tBurn - 60);
+        }
+        if (btns & B_WARP_ENC) {
+            if (button({r.x + 16, y + 4, r.width - 32, 32}, "Warp to the encounter", false, m.tEncounter - now > 120 && W.warpTo < 0, Icon::Forward))
+                W.startWarpTo(m.tEncounter + 30);
+        }
+        y += 44;
+    }
+    if (needIgnite) {
+        std::string k = keys::label(keys::A::Stage);
+        text(fit(trf("Engines are off: press {0} to ignite", k.empty() ? std::string("-") : k), w, 13, true), r.x + 16, y, 13, col::warn, true);
+        y += 21;
+    }
+    if (!hint.empty()) wrap(hint, r.x + 16, y, w, 13, m.phase == Phase::Message || m.impact ? col::warn : col::faint);
     g_navBottom = r.y + r.height;
 }
 
@@ -2428,7 +2601,10 @@ void drawHUD(App& app, Vessel& av) {
             row2++;
         }
     };
-    auto layNav = [&]() { navPanel(app, av); };
+    auto layNav = [&]() {
+        navPanel(app, av);
+        if (!navTargetOf(W, av)) missionPanel(app, av);
+    };
     auto layEngines = [&]() { enginesPanel(app, av, sr); };
     ui::layered({{L_VESSEL, layVessel}, {L_WARP, layWarp}, {L_ORBIT, layOrbit}, {L_RESOURCES, layResources}, {L_STAGES, layStages},
                  {L_TARGET, layTarget}, {L_NAVBALL, layNavball}, {L_NAV, layNav}, {L_ENGINES, layEngines}});
@@ -2529,7 +2705,10 @@ void bodyInfoPanel(App& app, Vessel* av) {
         mapFocus = selBody;
         setMapDist(b.radius * (b.isStar ? 30 : 6));
     }
-    if (av && button({r.x + 120, by, 96, 34}, "Target", av->target == selBody, true, Icon::Target)) av->target = av->target == selBody ? -1 : selBody;
+    if (av && button({r.x + 120, by, 96, 34}, "Target", av->target == selBody, true, Icon::Target)) {
+        av->target = av->target == selBody ? -1 : selBody;
+        if (av->target >= 0) missionOpen = true;
+    }
     if (av && button({r.x + 224, by, 100, 34}, "Jump", false, W.settings.hyperspace, Icon::Hyper, col::accent2)) {
         hyperOpen = true;
         hyperSel = selBody;

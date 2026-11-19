@@ -341,13 +341,19 @@ void setTextScale(float s) {
     if (g_fontPx > 0 && std::fabs(g_ui * g_scale * g_lineRatio - g_fontPx) > 0.01f) setLanguage(g_lang); // rebuild atlases
 }
 
+float g_userScale = 1.0f;
+void setUserScale(float k) { g_userScale = std::clamp(k, 0.5f, 2.0f); }
+float userScale() { return g_userScale; }
+
 void beginFrameScale() {
     float dpi = GetWindowScaleDPI().x;
     if (!(dpi > 0.5f)) dpi = 1.0f;
     float w = (float)GetScreenWidth(), h = (float)GetScreenHeight();
-    // the layout needs at least ~1280 x 740 logical pixels
-    float s = std::min(dpi, std::min(w / 1280.0f, h / 740.0f));
-    s = std::clamp(s, 0.6f, 4.0f);
+    // the layout needs at least ~1280 x 740 logical pixels (a GUI enlarged by the player: 1100 x 680, the
+    // window's minimum size)
+    float fit = g_userScale > 1.0f ? std::min(w / 1100.0f, h / 680.0f) : std::min(w / 1280.0f, h / 740.0f);
+    float s = std::min(dpi * g_userScale, fit);
+    s = std::clamp(s, 0.5f, 4.0f);
     if (std::fabs(s - g_ui) > 0.001f) {
         g_ui = s;
         if (g_fontPx > 0 && std::fabs(g_ui * g_scale * g_lineRatio - g_fontPx) / g_fontPx > 0.08f) setLanguage(g_lang);

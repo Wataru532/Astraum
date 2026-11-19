@@ -203,6 +203,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--fpslimit") == 0) app.fpsLimit = std::clamp(std::atoi(argv[i + 1]), 0, 3); // this run only
     ui::init(app.lang);
     ui::setTextScale(TEXT_SCALES[app.textSize]);
+    ui::setUserScale(UI_SIZES[std::clamp(app.uiSize, 0, 5)]);
     nav::setReverseZoom(app.reverseZoom);
     for (int i = 1; i + 1 < argc; i++)
         if (std::strcmp(argv[i], "--sfxdump") == 0) {

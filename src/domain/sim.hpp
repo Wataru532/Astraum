@@ -253,6 +253,9 @@ struct World {
     double effectiveWarp = 1;
     std::string warpLimitReason;
     std::vector<unsigned> explored;     // per body bitmask: 1 visited SOI, 2 orbited, 4 landed
+    // saves of 1.0.0 and earlier counted vessels that were not flown there (a rover started on the Moon): a
+    // "landed" mark without any landing behind it (no landing achievement, no vessel record, no base) goes
+    void repairExplored();
     std::deque<Toast> toasts;
     std::deque<LogEntry> missionLog;
     std::deque<WorldSnapshot> history;  // since the last launch, every ~2 s of game time (10 min kept)
@@ -355,6 +358,7 @@ struct World {
     // "warp here": time warp along the current orbit until simulation time tTarget, then back to x1
     double warpTo = -1;
     int warpToRef = -1;
+    bool warpToGround = false; // the warp started on the ground (to a launch window): ends if the vessel lifts off
     bool startWarpTo(double tTarget);
     // guidance (tutorials): an event is due at this simulation time; time warp slows down ahead of it so
     // that it cannot be skipped (-1: none). Cleared once the time has passed.

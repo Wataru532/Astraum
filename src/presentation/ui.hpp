@@ -36,6 +36,10 @@ void init(int lang);
 // Per-frame UI scaling: call right after BeginDrawing(). Computes the scale from the
 // monitor DPI (fitted so the layout's minimum logical size still fits the window).
 void beginFrameScale();
+// the player's GUI size (Settings): a factor on the DPI scale, 0.75 .. 1.5. A larger GUI is limited by the window
+// (the layout keeps at least 1100 x 680 logical pixels; at 100 % and below 1280 x 740 as before)
+void setUserScale(float k);
+float userScale();
 float scale();               // logical -> physical
 float SW();                  // logical screen width
 float SH();                  // logical screen height
