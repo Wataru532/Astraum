@@ -463,6 +463,14 @@ std::vector<std::string> factoryDebugSavedNames(App& app) {
 }
 void factoryDebugOverwriteChoice(int c) { g_testOverwrite = c; }
 
+// where the show / hide buttons of the stack list were drawn (tests)
+Rectangle g_eyeRect[64]{};
+bool factoryDebugEye(int i, Rectangle& r) {
+    if (i < 0 || i >= 64 || g_eyeRect[i].width <= 0) return false;
+    r = g_eyeRect[i];
+    return true;
+}
+
 void factoryFrame(App& app) {
     Design& D = app.design;
     factoryHistory(app);
@@ -665,8 +673,11 @@ void factoryFrame(App& app) {
         Rectangle row{sl.x + 4, y, sl.width - 14, 30};
         // show / hide in the 3D view (the eye; hidden parts are drawn faintly and cannot be clicked there)
         Rectangle eye{row.x + row.width - 30, row.y + 3, 26, 24};
-        bool overEye = CheckCollisionPointRec(GetMousePosition(), eye);
-        if (rowItem(row, (int)i == selected || isMulti((int)i)) && !modal && !overEye) {
+        // the row's own click area stops short of the eye: a click there must reach the eye button (the row took it
+        // first and the eye never saw it - the button did nothing)
+        Rectangle rowHit{row.x, row.y, row.width - 34, row.height};
+        if (i < 64) g_eyeRect[i] = eye;
+        if (rowItem(rowHit, (int)i == selected || isMulti((int)i)) && !modal) {
             bool sh = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
             bool ct = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
             if (sh && selected >= 0) {

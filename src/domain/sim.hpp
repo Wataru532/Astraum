@@ -284,6 +284,10 @@ struct World {
     };
     PadSite padSite() const;
     std::vector<int> launchBaseIds() const; // bases whose launch pad is ready (ids)
+    // where craft started on the ground (rovers, aircraft) may go: Earth, then every world with a surface base
+    // (another world needs a base first: they are placed beside it)
+    std::vector<int> deployBodies() const;
+    const SurfaceBase* firstBaseOn(int body) const;
     std::string launchSiteName() const;     // English name of the site rockets start from (a base: its name)
     // the Earth sites, then the bases with a launch pad: step through them (+1 next, -1 previous); the index of the
     // current one and how many there are

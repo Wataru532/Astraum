@@ -211,6 +211,19 @@ World::PadSite World::padSite() const {
     return ps;
 }
 
+std::vector<int> World::deployBodies() const {
+    std::vector<int> out{U.find("Earth")};
+    for (const SurfaceBase& b : bases)
+        if (std::find(out.begin(), out.end(), b.body) == out.end()) out.push_back(b.body);
+    return out;
+}
+
+const SurfaceBase* World::firstBaseOn(int body) const {
+    for (const SurfaceBase& b : bases)
+        if (b.body == body) return &b;
+    return nullptr;
+}
+
 std::vector<int> World::launchBaseIds() const {
     std::vector<int> ids;
     for (const SurfaceBase& b : bases)
@@ -3257,7 +3270,14 @@ int World::launchAircraft(const Craft& craft, int body) {
         north = cross(pad, east);
         // runway: 600 m south of the pad, the start 1,300 m west of it
         upF = norm(pad * b.radius + east * RUNWAY_START_X + north * RUNWAY_Y);
+    } else if (const SurfaceBase* sb = firstBaseOn(body)) {
+        // another world: beside the surface base there (north of its buildings, on its levelled ground)
+        upF = baseDir(*sb, b.radius, DEPLOY_X, DEPLOY_Y);
+        east = norm(cross(Vec3d{0, 0, 1}, upF));
+        north = cross(upF, east);
     } else {
+        // (no base: the landing sites of the missions there - only the tests start here, the screens offer the
+        // worlds with a base)
         double lat = 0, lon = 0;
         for (const Site& s : SITES)
             if (b.name == s.body) { lat = s.lat * DEG; lon = s.lon * DEG; }

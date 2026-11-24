@@ -97,6 +97,7 @@ bool textInput(Rectangle r, std::string& s, int maxLen, int id); // caret, selec
 void focusText(int id, const std::string& s); // give text field id the focus with all of s selected (a dialog opens)
 void testTextInput(int focus, const std::vector<int>& chars, const std::vector<int>& keys, bool ctrl, bool shift); // (tests: input for the next field draw)
 int testCaret();
+void testClick(Vector2 logicalPos); // (tests: a left click there in the next frame)
 // numeric entry: click to type a value, Enter / click elsewhere to apply, Esc to cancel; returns true when changed
 // dragging across it sideways changes the value (left: down, right: up; Shift: finer): dragStep per pixel (0: from the
 // value and the precision), snapped to multiples of snap (0: none)

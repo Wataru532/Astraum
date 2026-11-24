@@ -45,6 +45,7 @@ void flightDebugNightVision(bool on);
 void flightDebugView(double yaw, double pitch, double dist, Vec3d target);
 void flightDebugBuildDialog(App& app, bool on);
 void flightDebugBases(bool on);
+bool factoryDebugEye(int i, Rectangle& r);
 void flightDebugHorizon(const World& W, const Vessel& v, Vec3d& up, Vec3d& north, Vec3d& east);
 extern Vec3d g_rotDbg[6]; // (sim.cpp: the active vessel's last attitude step)
 int flightDebugDeleteDebris(World& W);
@@ -114,7 +115,7 @@ struct AT {
     Vec3d rcsV0, rcsR0;
     double rcsM0 = 0, rcsMono0 = 0, rcsT0 = 0;
     // --missiontest
-    double t0 = 0;
+    double t0 = 0, helioFrame = 0;
     float sc0 = 1;
 } T;
 
@@ -4707,6 +4708,8 @@ bool baseTestStep(App& app) {
         bad = 0;
         W.newGame(Settings{});
         app.gameStarted = true;
+        // without a base, rovers and aircraft can start on Earth only (v1.1.1)
+        check(W.deployBodies() == std::vector<int>{W.U.find("Earth")}, "no base yet: craft start on Earth only");
         // the rules first: nothing on Earth, no new base without a habitat
         {
             Craft c = craftFromDesign(moduleLander({"isru_plant"}));
@@ -4832,6 +4835,17 @@ bool baseTestStep(App& app) {
     }
     if (T.frames == 28) {
         shot("55_base_liftoff.png");
+        // with the base, Mars is a start world: a rover stands beside the base
+        {
+            std::vector<int> d = W.deployBodies();
+            check(std::find(d.begin(), d.end(), mars) != d.end(), "with a base on Mars, Mars is offered as a start world");
+            int ri = W.launchAircraft(craftNamed("Mars Rover"), mars);
+            const SurfaceBase& sb = W.bases[baseIdx];
+            double R = W.U.bodies[mars].radius;
+            double dist = std::acos(std::clamp(dot(norm(W.vessels[ri].landPos), baseCentreDir(sb)), -1.0, 1.0)) * R;
+            std::fprintf(T.log, "basetest: rover started %.0f m from the base centre\n", dist);
+            check(W.vessels[ri].ref == mars && dist > 150 && dist < 400, "the rover starts beside the base");
+        }
         // save and load: the base comes back with all its modules, the launch site with it
         std::string txt = W.serialize();
         std::string path = T.dir + "\\basetest.sfs";
@@ -5030,7 +5044,7 @@ bool missionTestStep(App& app) {
     if (T.frames == 44) {
         double frame = (GetTime() - T.t0) / 30 * 1000;
         std::fprintf(T.log, "missiontest: map view with a heliocentric vessel: %.1f ms per frame\n", frame);
-        check(frame < 60, "the map stays smooth with a heliocentric vessel");
+        T.helioFrame = frame; // (judged against the reference below: the machine load changes both alike)
         shot("62_mission_map_heliocentric.png");
         // the same map with a vessel in a low Earth orbit (the reference)
         W.newGame(Settings{});
@@ -5042,7 +5056,9 @@ bool missionTestStep(App& app) {
     }
     if (T.frames == 48) T.t0 = GetTime();
     if (T.frames == 78) {
-        std::fprintf(T.log, "missiontest: map view with a vessel in low Earth orbit (reference): %.1f ms per frame\n", (GetTime() - T.t0) / 30 * 1000);
+        double ref = (GetTime() - T.t0) / 30 * 1000;
+        std::fprintf(T.log, "missiontest: map view with a vessel in low Earth orbit (reference): %.1f ms per frame\n", ref);
+        check(T.helioFrame < ref * 1.5 + 5, "the map with a heliocentric vessel is as fast as with one in Earth orbit");
         flightDebugSetMap(false, 0);
         // exploration: a rover started on the Moon is no landing there; an old save's false mark is repaired
         W.newGame(Settings{});
@@ -5075,6 +5091,24 @@ bool missionTestStep(App& app) {
         shot("64_gui_75.png");
         ui::setUserScale(1.0f);
         app.settingsOpen = false;
+        // the factory's show / hide button (v1.1.1: the row took its click)
+        app.design = builtinTemplates()[0];
+        app.screen = Screen::Factory;
+        return true;
+    }
+    if (T.frames == 88 || T.frames == 92) {
+        Rectangle e;
+        if (factoryDebugEye(0, e)) ui::testClick({e.x + e.width / 2, e.y + e.height / 2});
+        else check(false, "the factory shows the eye button of the first part");
+        return true;
+    }
+    if (T.frames == 90) {
+        check(app.design.stack.size() > 0 && app.design.stack[0].hidden, "factory: the eye button hides the part");
+        shot("65_factory_part_hidden.png");
+        return true;
+    }
+    if (T.frames == 94) {
+        check(app.design.stack.size() > 0 && !app.design.stack[0].hidden, "factory: a second click shows it again");
         std::fprintf(T.log, "missiontest: %s (%d failed)\n", bad ? "FAIL" : "all ok", bad);
         return false;
     }

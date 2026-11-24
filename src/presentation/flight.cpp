@@ -1930,8 +1930,7 @@ void navPanel(App& app, Vessel& av) {
     else if (g.mode == Mode::Coast) hint = tr("Coast to the intercept. Close by, the panel switches to the docking approach.");
     else hint = tr("Translate with RCS by the amounts shown; keep the closing speed low near the port.");
     {
-        float lw = measure(hint, 13).x;
-        hintH = std::ceil(std::max(lw, 1.f) / w * 1.08f) * 18 + 6;
+        hintH = wrap(hint, 0, 0, w, 13, col::faint, -1e9f) + 6; // (measured: wrap draws nothing above maxY)
     }
     // a burn is asked for but the engines are not lit (a start in orbit, after staging): say how to light them
     bool needIgnite = !av.ignited && (g.mode == Mode::Transfer || (g.mode == Mode::Proximity && len(g.dvCraft) > 3));
@@ -2119,10 +2118,19 @@ void missionPanel(App& app, Vessel& av) {
     }
     if (m.phase != Phase::Message && !m.message.empty() && m.phase != Phase::Transfer && m.phase != Phase::Arrival) hint = tr(m.message) + "  " + hint;
     bool needIgnite = !av.ignited && (btns & B_BURN) && m.tBurn - now < 30;
-    float lw = measure(hint, 13).x;
-    float hintH = hint.empty() ? 0 : std::ceil(std::max(lw, 1.f) / w * 1.08f) * 18 + 6;
-    int nBtnRows = (btns & (B_WARP_LAUNCH | B_ASCENT | B_BURN | B_WARP_BURN | B_WARP_ENC)) ? 1 : 0;
-    r.height = 38 + 26 + (goal.empty() ? 0 : 20) + rows.size() * 21 + nBtnRows * 44 + (needIgnite ? 21 : 0) + hintH + 8;
+    float hintH = hint.empty() ? 0 : wrap(hint, 0, 0, w, 13, col::faint, -1e9f) + 6; // (measured: wrap draws nothing above maxY)
+    // the buttons side by side, or one per row where a label would not fit half the panel (German, Japanese)
+    std::vector<const char*> btnLabels;
+    if (btns & B_ASCENT) btnLabels.push_back("SAS Ascent");
+    if (btns & B_WARP_LAUNCH) btnLabels.push_back("Warp to window");
+    if (btns & B_BURN) btnLabels.push_back("SAS Burn");
+    if (btns & B_WARP_BURN) btnLabels.push_back("Warp to burn");
+    const float halfW = (r.width - 40) / 2;
+    bool stackBtns = false;
+    for (const char* l : btnLabels)
+        if (measure(tr(l), 16).x + 26 + 30 > halfW) stackBtns = true;
+    int nBtnRows = btnLabels.empty() ? ((btns & B_WARP_ENC) ? 1 : 0) : (stackBtns ? (int)btnLabels.size() : 1);
+    r.height = 38 + 26 + (goal.empty() ? 0 : 20) + rows.size() * 21 + (nBtnRows > 0 ? 44 + (nBtnRows - 1) * 38 : 0) + (needIgnite ? 21 : 0) + hintH + 8;
     panel(r);
     float y = r.y + 12;
     text("MISSION", r.x + 16, y, 13, col::dim, true);
@@ -2144,10 +2152,11 @@ void missionPanel(App& app, Vessel& av) {
         y += 21;
     }
     if (nBtnRows) {
-        float bw = (r.width - 40) / 2, bx = r.x + 16;
+        float bw = stackBtns ? r.width - 32 : halfW, bx = r.x + 16, by = y + 4;
         auto slot = [&]() {
-            Rectangle b{bx, y + 4, bw, 32};
-            bx += bw + 8;
+            Rectangle b{bx, by, bw, 32};
+            if (stackBtns) by += 38;
+            else bx += bw + 8;
             return b;
         };
         if (btns & B_ASCENT) {
@@ -2166,7 +2175,7 @@ void missionPanel(App& app, Vessel& av) {
             if (button({r.x + 16, y + 4, r.width - 32, 32}, "Warp to the encounter", false, m.tEncounter - now > 120 && W.warpTo < 0, Icon::Forward))
                 W.startWarpTo(m.tEncounter + 30);
         }
-        y += 44;
+        y += 44 + (nBtnRows - 1) * 38;
     }
     if (needIgnite) {
         std::string k = keys::label(keys::A::Stage);
@@ -2773,7 +2782,12 @@ void revertToLaunch(App& app) {
     if (W.active >= 0 && W.active < (int)W.vessels.size()) W.vessels.erase(W.vessels.begin() + W.active);
     W.active = -1;
     if (app.lastLaunchBody == -3) W.launchInOrbit(app.lastLaunched, app.lastLaunchNear, 120);
-    else if (app.lastLaunchBody != -2) W.launchAircraft(app.lastLaunched, app.lastLaunchBody);
+    else if (app.lastLaunchBody != -2) {
+        // (the start world must still have its base: otherwise back to Earth's runway)
+        std::vector<int> deploy = W.deployBodies();
+        int body = std::find(deploy.begin(), deploy.end(), app.lastLaunchBody) != deploy.end() ? app.lastLaunchBody : deploy.front();
+        W.launchAircraft(app.lastLaunched, body);
+    }
     else W.launch(app.lastLaunched);
     flightOnEnter(app);
 }

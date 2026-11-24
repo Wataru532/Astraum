@@ -1541,14 +1541,17 @@ void cadFrame(App& app) {
     bool spaceplane = rocket && wheels; // winged rocket / combined-cycle craft: pad or runway
     bool hasPort = false;
     for (const Component& k : C.comps) hasPort |= k.func == Func::Docking;
-    static int airSite = 0, planeStart = 0, orbitStart = 0;
+    static int planeStart = 0, orbitStart = 0;
     if (!hasPort || aircraft || spaceplane) orbitStart = 0;
     // an orbital start next to the vessel flown last (a module delivered for assembly)
     const Vessel* nearV = nullptr;
     if (app.gameStarted)
         if (const Vessel* av = app.world.activeVessel())
             if (!av->destroyed && !av->landed) nearV = av;
-    static const char* AIR_SITES[] = {"Earth", "Moon", "Mars", "Titan"};
+    // where a rover or an aircraft starts: Earth, or a world with a surface base (beside the base)
+    static int airBody = -1;
+    std::vector<int> deploy = app.world.deployBodies();
+    if (std::find(deploy.begin(), deploy.end(), airBody) == deploy.end()) airBody = deploy.front(); // (no base there any more: Earth)
     if (primaryButton(top(140), "LAUNCH", aircraft ? Icon::Play : Icon::Rocket, !C.comps.empty() && !modal)) {
         if (!app.gameStarted) {
             app.world.newGame(app.world.settings);
@@ -1560,7 +1563,7 @@ void cadFrame(App& app) {
             app.lastLaunchNear = nearV ? nearV->id : -1;
             app.world.launchInOrbit(C, app.lastLaunchNear, 120);
         } else if (aircraft || (spaceplane && planeStart == 1)) {
-            int body = app.world.U.find(aircraft ? AIR_SITES[airSite] : "Earth");
+            int body = aircraft ? airBody : app.world.U.find("Earth");
             app.lastLaunchBody = body;
             app.world.launchAircraft(C, body);
         } else {
@@ -1588,9 +1591,13 @@ void cadFrame(App& app) {
     }
     if (aircraft) {
         Rectangle sr = top(170);
-        if (button(sr, trf("Start on: {0}", tr(AIR_SITES[airSite])), false, !modal, Icon::Planet)) airSite = (airSite + 1) % 4;
+        auto at = std::find(deploy.begin(), deploy.end(), airBody);
+        int k = at == deploy.end() ? 0 : (int)(at - deploy.begin());
+        if (button(sr, trf("Start on: {0}", tr(app.world.U.bodies[airBody].name)), false, !modal && deploy.size() > 1, Icon::Planet))
+            airBody = deploy[(k + 1) % deploy.size()];
         if (CheckCollisionPointRec(GetMousePosition(), sr))
-            tooltip(tr("Earth: the runway beside the launch complex. Moon: Hadley-Apennine (Apollo 15). Mars: Jezero crater. Titan: the Huygens landing site. Click to change."));
+            tooltip(deploy.size() > 1 ? tr("Earth: the runway beside the launch complex. Other worlds: beside your surface base there. Click to change.")
+                                      : tr("Earth: the runway beside the launch complex. To start on another world, build a surface base there first."));
     }
     if (!aircraft && orbitStart == 0 && !(spaceplane && planeStart == 1)) {
         // the launch site (the same setting as the factory's): click for the next, right-click for the previous

@@ -113,9 +113,11 @@ void layered(const std::vector<std::pair<int, std::function<void()>>>& layers) {
 }
 namespace {
 
+bool g_testClickPending = false, g_testClick = false; // (tests: an injected click)
+Vector2 g_testClickPos{};
 bool hovered(Rectangle r) {
     if (g_inputBlocked) return false;
-    Vector2 m = GetMousePosition();
+    Vector2 m = g_testClick ? g_testClickPos : GetMousePosition();
     return CheckCollisionPointRec(m, r) && inClip(m) && !layerOccluded();
 }
 
@@ -434,6 +436,8 @@ void ensureGlyphs(const std::string& s) {
 }
 
 void beginFrame() {
+    g_testClick = g_testClickPending;
+    g_testClickPending = false;
     if (g_glyphRebuild) {
         g_glyphRebuild = false;
         setLanguage(g_lang); // (new characters in the atlas)
@@ -529,7 +533,7 @@ void setClickHook(void (*fn)()) { g_clickHook = fn; }
 static bool clicked(Rectangle r) {
     if (!hovered(r)) return false;
     overNow = true;
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !anyClickConsumed) {
+    if ((IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || g_testClick) && !anyClickConsumed) {
         anyClickConsumed = true;
         if (g_clickHook) g_clickHook();
         return true;
@@ -730,6 +734,10 @@ void testTextInput(int focus, const std::vector<int>& chars, const std::vector<i
     g_tiShift = shift;
 }
 int testCaret() { return g_caret; }
+void testClick(Vector2 p) {
+    g_testClickPending = true;
+    g_testClickPos = p;
+}
 void focusText(int id, const std::string& s) {
     focusId = id;
     g_anchor = 0;

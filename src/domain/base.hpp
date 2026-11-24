@@ -37,6 +37,8 @@ constexpr double BASE_REACH = 3000.0;      // a lander this close to a base adds
 constexpr double BASE_FLAT_RADIUS = 900.0; // the fine relief is levelled within this distance of the centre [m]
 constexpr double BASE_PAD_DECK_H = 2.0;    // height of the base's launch mount above the ground [m]
 constexpr int BASE_MAX = 64, BASE_MAX_MODULES = 160;
+// where rovers and aircraft started at a base stand: north of the buildings (east, north of the centre [m])
+constexpr double DEPLOY_X = -40, DEPLOY_Y = 230;
 
 struct BaseStatus {
     int habitats = 0, greenhouses = 0, isru = 0, crew = 0;
