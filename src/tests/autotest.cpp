@@ -5115,6 +5115,84 @@ bool missionTestStep(App& app) {
     return true;
 }
 
+// ------------------------------------------------------------------ leaving Earth on rails (--escapetest)
+// an escape from a low Earth orbit flown at each time warp, the warp asked for again whenever it stops (as a
+// player holding the warp key): the vessel must follow the heliocentric orbit the map showed before the escape
+bool escapeTestStep(App& app) {
+    World& W = app.world;
+    const Universe& U = W.U;
+    if (T.frames < 2) return true;
+    int bad = 0;
+    int earth = U.find("Earth"), sun = U.find("Sun");
+    struct Case { double vinf; double ang; int warp; };
+    std::vector<Case> cases;
+    for (double vinf : {300.0, 1500.0, 4000.0})
+        for (double ang : {0.0, 2.0})
+            for (int wi : {8, 10, 12}) cases.push_back({vinf, ang, wi});
+    for (const Case& cs : cases) {
+        W.newGame(Settings{});
+        app.gameStarted = true;
+        int vi = W.launch(craftFromDesign(builtinTemplates()[0]));
+        W.placeInOrbit(W.vessels[vi], 200e3);
+        for (int k = 0; k < 3; k++) W.update(0.02);
+        Vessel* v = W.activeVessel();
+        // rotate the burn point along the orbit (a different exit direction)
+        keplerPropagate(v->r, v->v, U.bodies[earth].GM, cs.ang * 1000);
+        double GM = U.bodies[earth].GM, rr = len(v->r);
+        v->v = norm(v->v) * std::sqrt(cs.vinf * cs.vinf + 2 * GM / rr);
+        // the prediction the map draws: the exit point and the Sun's conic from there
+        Conic c = stateToConic(v->r, v->v, GM);
+        double soi = U.bodies[earth].soi;
+        double cosExit = (c.p / soi - 1) / c.e;
+        double tExit = std::fabs(cosExit) <= 1 ? timeToTrueAnomaly(c, std::acos(cosExit)) : -1;
+        if (tExit <= 0) {
+            std::fprintf(T.log, "escapetest: vinf %.0f: no exit predicted -> FAIL\n", cs.vinf);
+            bad++;
+            continue;
+        }
+        Vec3d r = v->r, vv = v->v;
+        keplerPropagate(r, vv, GM, tExit);
+        std::vector<BodyState> S2;
+        U.computeStates(W.t + tExit, S2);
+        Vec3d rp = r + U.relPos(S2, earth, sun), vp = vv + U.relVel(S2, earth, sun);
+        double tPred = W.t + tExit, tStart = W.t;
+        double tSwitch = -1, tEnd = tPred + 120 * DAY;
+        int frames = 0, stops = 0;
+        double worst = 0, worstT = 0;
+        while (frames++ < 200000 && W.t < tEnd) {
+            v = W.activeVessel();
+            if (!v || v->destroyed) break;
+            if (W.warpIndex < cs.warp) {
+                if (W.warpIndex == 0 && frames > 1) stops++;
+                W.setWarp(cs.warp);
+            }
+            W.update(0.05);
+            v = W.activeVessel();
+            if (!v) break;
+            if (v->ref == sun && tSwitch < 0) tSwitch = W.t;
+            if (v->ref == sun) {
+                Vec3d a = rp, b = vp;
+                keplerPropagate(a, b, U.bodies[sun].GM, W.t - tPred);
+                double d = len(v->r - a);
+                if (d > worst) { worst = d; worstT = W.t; }
+            }
+        }
+        v = W.activeVessel();
+        double dEarth = v ? len(v->r - U.relPos(W.states, earth, v->ref)) : -1;
+        bool ok = v && v->ref == sun && tSwitch > 0 && std::fabs(tSwitch - tPred) < 0.02 * tExit + 3600 && worst < 1e-3 * len(rp);
+        std::fprintf(T.log,
+                     "escapetest: vinf %5.0f m/s, burn +%4.0f s, warp x%-6g: exit predicted in %6.2f d, flown %6.2f d, %d stops, %d frames; "
+                     "largest gap to the predicted Sun orbit %.0f km (at +%.1f d), %.2f AU from Earth after %.0f d -> %s\n",
+                     cs.vinf, cs.ang * 1000, WARP_LEVELS[cs.warp], tExit / DAY, tSwitch > 0 ? (tSwitch - tStart) / DAY : -1, stops, frames, worst / 1e3,
+                     (worstT - tStart) / DAY, dEarth / AU, (W.t - tStart) / DAY, ok ? "ok" : "FAIL");
+        bad += !ok;
+        std::fflush(T.log);
+    }
+    std::fprintf(T.log, "escapetest: %s (%d failed)\n", bad ? "FAIL" : "all ok", bad);
+    std::fflush(T.log);
+    return false;
+}
+
 // ------------------------------------------------------------------ rovers (--rovertest)
 // the lunar rover at Hadley and the Mars rover at Jezero: drive (W), steer (D), stop and park (keys
 // released), drive off again, reverse (S); speed, heading, battery and the warp allowed while rolling
@@ -5496,6 +5574,7 @@ bool autotestInit(App& app, int argc, char** argv) {
         if (std::string(argv[i]) == "--uitest") T.phase = 450;
         if (std::string(argv[i]) == "--basetest") T.phase = 490;
         if (std::string(argv[i]) == "--missiontest") T.phase = 500;
+        if (std::string(argv[i]) == "--escapetest") T.phase = 510;
         if (std::string(argv[i]) == "--solartest") T.phase = 460;
         if (std::string(argv[i]) == "--startest") T.phase = 470;
         if (std::string(argv[i]) == "--bodytest") T.phase = 480;
@@ -6949,6 +7028,9 @@ bool autotestStep(App& app) {
         break;
     case 500:
         if (!missionTestStep(app)) T.phase = 9;
+        break;
+    case 510:
+        if (!escapeTestStep(app)) T.phase = 9;
         break;
     case 9:
         logState(app, "end");

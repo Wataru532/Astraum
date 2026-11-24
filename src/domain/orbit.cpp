@@ -104,25 +104,45 @@ void keplerPropagate(Vec3d& R0, Vec3d& V0, double mu, double dt) {
     }
     double smu = std::sqrt(mu);
     double vr0 = dot(R0, V0) / r0;
+    double sgn = dt >= 0 ? 1.0 : -1.0;
+    // The universal Kepler equation F(chi) = 0 rises monotonically (dF/dchi = r > 0), so the root is
+    // bracketed and Newton steps that leave the bracket fall back to bisection. (Plain Newton from the
+    // initial guess ran away on a hyperbola far out from the planet - one step of a fast warp threw a vessel
+    // leaving Earth to 1e32 m - and stalled on a wrong value in short steps there: the escape came late.)
+    // Bracket: r >= the periapsis on the whole path, so |chi| <= sqrt(mu)|dt| / pe; an ellipse reduced to less
+    // than one period also has |chi| < 2 pi sqrt(a).
+    Vec3d hv = cross(R0, V0);
+    double pe = r0;
+    {
+        Vec3d ev = cross(V0, hv) / mu - R0 / r0;
+        double e = len(ev), p = len2(hv) / mu;
+        if (p > 0) pe = std::min(r0, p / (1 + e));
+    }
+    double bound = smu * std::fabs(dt) / std::max(pe, 1e-3);
+    if (alpha > 1e-15) bound = std::min(bound, TAU / std::sqrt(alpha) * 1.000001);
+    double lo = sgn > 0 ? 0 : -bound, hi = sgn > 0 ? bound : 0;
     double chi;
     if (alpha > 1e-15) chi = smu * alpha * dt;
     else if (alpha < -1e-15) {
         double a = 1.0 / alpha;
-        double sgn = dt >= 0 ? 1.0 : -1.0;
         double arg = (-2 * mu * alpha * dt) / (dot(R0, V0) + sgn * std::sqrt(-mu * a) * (1 - r0 * alpha));
         chi = sgn * std::sqrt(-a) * std::log(std::max(arg, 1e-12));
-        if (!std::isfinite(chi)) chi = smu * std::fabs(alpha) * dt;
     } else chi = smu * dt / r0;
+    if (!std::isfinite(chi) || chi <= lo || chi >= hi) chi = 0.5 * (lo + hi);
     double C = 0, S = 0;
-    for (int it = 0; it < 60; it++) {
+    for (int it = 0; it < 200; it++) {
         double z = alpha * chi * chi;
         stumpff(z, C, S);
         double F = r0 * vr0 / smu * chi * chi * C + (1 - alpha * r0) * chi * chi * chi * S + r0 * chi - smu * dt;
         double dF = r0 * vr0 / smu * chi * (1 - alpha * chi * chi * S) + (1 - alpha * r0) * chi * chi * C + r0;
-        if (std::fabs(dF) < 1e-300) break;
-        double step = F / dF;
-        chi -= step;
-        if (std::fabs(step) < 1e-9 * std::max(1.0, std::fabs(chi))) break;
+        if (!std::isfinite(F)) F = chi > 0 ? 1e300 : -1e300; // (cosh overflow: far beyond the root)
+        if (F == 0) break;
+        (F < 0 ? lo : hi) = chi;
+        double next = chi - F / dF;
+        if (!std::isfinite(next) || next <= lo || next >= hi) next = 0.5 * (lo + hi);
+        double step = next - chi;
+        chi = next;
+        if (std::fabs(step) < 1e-13 * std::max(1.0, std::fabs(chi)) || hi - lo < 1e-15 * std::max(1.0, std::fabs(chi))) break;
     }
     double z = alpha * chi * chi;
     stumpff(z, C, S);

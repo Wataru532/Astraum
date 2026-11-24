@@ -1,6 +1,6 @@
 # Astraum プログラム仕様書
 
-- 対象バージョン: 1.1.1（`src/shared/brand.hpp` の `APP_VERSION`）
+- 対象バージョン: 1.1.2（`src/shared/brand.hpp` の `APP_VERSION`）
 - 旧名称: StellarForge（名称変更前の開発版。ファイルとデータはそのまま引き継げます）
 - 作成日: 2026-11-19
 - 対象: `src/` 以下のソースコード、`tools/` のスクリプト、ビルド設定、埋め込みリソース
@@ -212,8 +212,9 @@ raylib、Windows、ファイル操作に依存しない、ゲームの規則そ�
 - `Universe::init`：恒星 4、惑星 8、準惑星 2、衛星 12、系外惑星 3、彗星 7 を登録します。
 - 天体の位置と自転の計算。SOI がヒル球より小さくなる小天体の補正。
 
-#### `orbit.hpp/.cpp`（24 / 137 行）
+#### `orbit.hpp/.cpp`（24 / 157 行）
 二体問題の軌道計算です（`stateToConic`、`keplerPropagate`、`timeToTrueAnomaly`）。
+- `keplerPropagate` は普遍変数のケプラー方程式を、解を挟む区間つきのニュートン法で解きます（区間を外れる一歩は二分法）。方程式は単調増加（傾きは距離 r）なので、区間は「近点距離以上の距離」から求まります。v1.1.1 まではニュートン法だけで、遠くの双曲線軌道で発散し、高倍率のタイムワープで地球を離れる機体が極端な距離へ飛ばされることがありました。
 
 #### `parts.hpp/.cpp`（160 / 1020 行）
 工場の部品カタログ（36 種）とスタック式設計（`Design`）です。
@@ -337,6 +338,7 @@ Astraum.exe --autotest <出力フォルダ> --<テスト名> [オプション]
 | （指定なし） | 既定の総合テスト（設定画面、クレジット画面、組み込み設計の打ち上げなど） |
 | `--basetest` | 地表基地（建設条件、火星での建設、発射台、基地からの打ち上げと上昇、保存と読み込み、旧形式のセーブ、F11 の全画面切り替え） |
 | `--missiontest` | ミッション支援（月：打ち上げウィンドウ→出発噴射→遭遇→捕獲→周回、火星：遷移ウィンドウ→出発→軌道修正→遭遇）、太陽周回時の遭遇予測とマップの速さ、探査状況の判定と旧セーブの修復、GUI のサイズ |
+| `--escapetest` | 地球の重力圏からの脱出（脱出速度 3 種 × 噴射位置 2 種 × ワープ ×1 万／×100 万／×1 億）：切り替えの時刻と、その後の太陽周回軌道が脱出前に表示された予測と一致すること |
 | `--uitest` | UI 全般 |
 | `--achtest` `--airtest` `--bgmtest` `--bodytest` `--cadonly` `--ctrltest` `--designtest` `--docktest` `--duptest` `--labeltest` `--navtest` `--orbitall` `--orbitlinetest` `--perftest` `--picktest` `--realtest` `--rewindtest` `--rovertest` `--savetest` `--seatest` `--skytest` `--solartest` `--spaceplanetest` `--startest` `--terraintest` `--trusstest` `--tutflight` `--warptest` `--tliexp` | 各機能のテスト（前版から継続） |
 

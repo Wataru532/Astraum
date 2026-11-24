@@ -5,7 +5,7 @@
 #include <string>
 
 #define APP_NAME "Astraum"
-#define APP_VERSION "1.1.1"
+#define APP_VERSION "1.1.2"
 
 namespace brand {
 constexpr const char* NAME = APP_NAME;
