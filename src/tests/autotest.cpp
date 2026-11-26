@@ -2811,7 +2811,12 @@ bool spaceplaneTestStep(App& app) {
     }
     if (T.frames < 4) return true;
     if (!v) return finish("FAIL (no vessel)");
-    if (v->destroyed) return finish((std::string("FAIL (") + v->fate + ")").c_str());
+    if (v->destroyed) {
+        // the control case burns up as it should; seen here when the last step of a frame was the one (under load)
+        if (T.tf == 5 && v->fate.rfind(tr("Burned up during atmospheric entry"), 0) == 0)
+            return finish((std::string("without tiles: ") + v->fate + " -> ok (the thermal protection is needed)").c_str());
+        return finish((std::string("FAIL (") + v->fate + ")").c_str());
+    }
     const Body& b = W.U.bodies[v->ref];
     Conic c = stateToConic(v->r, v->v, b.GM);
     double alt = len(v->r) - b.radius;
@@ -5193,6 +5198,309 @@ bool escapeTestStep(App& app) {
     return false;
 }
 
+// ------------------------------------------------------------------ a target launched by the player (--rdvtest)
+// the first rocket flown to orbit by the ascent guidance (as a player would), then a second one launched from
+// the pad toward it: the first one's orbit must not change while the second flies (ascent, coast, warp)
+bool rdvTestStep(App& app) {
+    World& W = app.world;
+    const Universe& U = W.U;
+    static int stage = 0, tgtId = -1, bad = 0;
+    static double a0 = 0, e0 = 0, worstDa = 0, worstDe = 0, tLaunch2 = 0;
+    static int tplIdx = 0;
+    auto tpl = builtinTemplates();
+    int earth = U.find("Earth");
+    const Body& eb = U.bodies[earth];
+    auto check = [&](bool ok, const std::string& what) {
+        std::fprintf(T.log, "rdvtest: %s -> %s\n", what.c_str(), ok ? "ok" : "FAIL");
+        std::fflush(T.log);
+        bad += !ok;
+    };
+    auto target = [&]() -> Vessel* {
+        for (Vessel& o : W.vessels)
+            if (o.id == tgtId && !o.destroyed) return &o;
+        return nullptr;
+    };
+    auto watch = [&](const char* when) {
+        Vessel* t = target();
+        if (!t) return;
+        Conic c = stateToConic(t->r, t->v, U.bodies[t->ref].GM);
+        double da = std::fabs(c.a - a0), de = std::fabs(c.e - e0);
+        if (da > worstDa + 50 || de > worstDe + 1e-4) {
+            Vessel* a = W.activeVessel();
+            std::fprintf(T.log, "rdvtest: [%s] target a %.3f km (%+.3f km) e %.6f ref %s ignited %d thr %.2f sas %d stage %d rcs %d; active alt %.0f km warp %d\n", when, c.a / 1e3,
+                         (c.a - a0) / 1e3, c.e, U.bodies[t->ref].name.c_str(), (int)t->ignited, t->throttle, (int)t->sas, t->stage, (int)t->rcs,
+                         a ? (len(a->r) - U.bodies[a->ref].radius) / 1e3 : -1.0, W.warpIndex);
+            std::fflush(T.log);
+        }
+        worstDa = std::max(worstDa, da);
+        worstDe = std::max(worstDe, de);
+    };
+    if (T.frames == 2) {
+        bad = 0;
+        stage = 0;
+        tplIdx = 0;
+        for (int i = 0; i < (int)tpl.size(); i++)
+            if (tpl[i].name.find("Orbiter") != std::string::npos || tpl[i].name.find("orbit") != std::string::npos) { tplIdx = i; break; }
+        W.newGame(Settings{});
+        app.gameStarted = true;
+        app.design = tpl[tplIdx];
+        app.lastLaunched = craftFromDesign(app.design);
+        W.launch(app.lastLaunched);
+        app.screen = Screen::Flight;
+        flightOnEnter(app);
+        std::fprintf(T.log, "rdvtest: rocket '%s'\n", tpl[tplIdx].name.c_str());
+        return true;
+    }
+    if (T.frames < 6) return true;
+    Vessel* v = W.activeVessel();
+    if (!v || v->destroyed) {
+        check(false, "the active rocket flies");
+        return false;
+    }
+    if (stage == 0 || stage == 2) {
+        if (v->sas != SAS::Ascent && v->throttle < 0.5 && W.t - v->launchTime < 1) {
+            v->sas = SAS::Ascent;
+            v->throttle = 1;
+            if (!v->ignited) W.stage(*v);
+            return true;
+        }
+        if (v->ascentPhase == 1 && len(v->r) - eb.radius > eb.atmTop) W.warpIndex = std::min(5, W.maxWarpIndex());
+        else if (W.warpIndex > 0) W.warpIndex = 0;
+        for (int k = 0; k < 8 && !v->destroyed && v->sas == SAS::Ascent; k++) {
+            W.update(0.05);
+            tfStaging(app, v);
+            if (stage == 2) watch("second ascent");
+        }
+        if (W.t - v->launchTime > 6000) {
+            check(false, "the ascent reaches an orbit");
+            return false;
+        }
+        if (v->sas == SAS::Ascent) return true;
+        Conic c = stateToConic(v->r, v->v, U.bodies[v->ref].GM);
+        std::fprintf(T.log, "rdvtest: ascent %d done: %.0f x %.0f km, ignited %d throttle %.2f sas %d stage %d\n", stage / 2 + 1, (c.pe - eb.radius) / 1e3,
+                     (c.ap - eb.radius) / 1e3, (int)v->ignited, v->throttle, (int)v->sas, v->stage);
+        if (stage == 0) {
+            check(c.valid && c.e < 1 && c.pe - eb.radius > 150e3, "the first rocket reaches orbit");
+            tgtId = v->id;
+            a0 = c.a;
+            e0 = c.e;
+            worstDa = worstDe = 0;
+            // some time in orbit, as a player would spend it
+            for (int k = 0; k < 40; k++) W.update(0.05);
+            // the second rocket from the pad, the first one's throttle left up (v1.1.3: it went on burning unseen)
+            {
+                double fuel = 0;
+                for (size_t i = 0; i < v->comps.size(); i++)
+                    if (v->comps[i].func == Func::Tank && v->comps[i].stage == v->stage) fuel += v->prop[i];
+                std::fprintf(T.log, "rdvtest: the first rocket keeps %.0f kg of propellant in its stage; throttle left at 100 %%\n", fuel);
+            }
+            v->throttle = 1;
+            int vi = W.launch(app.lastLaunched);
+            W.vessels[vi].targetVessel = tgtId;
+            Vessel* t = target();
+            check(t != nullptr, "the first rocket stays in orbit after the second launch");
+            if (t) {
+                Conic ct = stateToConic(t->r, t->v, U.bodies[t->ref].GM);
+                a0 = ct.a;
+                e0 = ct.e;
+            }
+            tLaunch2 = W.t;
+            stage = 2;
+            return true;
+        }
+        stage = 3;
+        return true;
+    }
+    if (stage == 3) {
+        // coasting near each other at every warp level, then back
+        for (int wi : {4, 6, 8, 10, 12, 6, 0}) {
+            for (int k = 0; k < 60; k++) {
+                W.setWarp(wi);
+                W.update(0.05);
+                watch(("warp " + std::to_string(wi)).c_str());
+            }
+        }
+        std::fprintf(T.log, "rdvtest: target orbit drift over %.0f min: a %.3f km, e %.6f\n", (W.t - tLaunch2) / 60, worstDa / 1e3, worstDe);
+        check(worstDa < 200 && worstDe < 1e-4, "the target's orbit stays the same while the second rocket flies");
+        // a vessel left with its throttle up and its tanks dry (an older save) counts as able to thrust: under
+        // x10,000,000 it must keep up with the world clock (its steps fell to 1 s, the frame ended early and it was left
+        // behind: a target that jumps; at x1e8 each frame stalled for seconds)
+        {
+            W.newGame(Settings{});
+            W.launchInOrbit(craftNamed("Crew Ferry"), -1, 0);
+            tgtId = W.activeVessel()->id;
+            W.launchInOrbit(craftNamed("Station Core Module"), tgtId, 2000);
+            Vessel* t = target();
+            if (!t->ignited) W.stage(*t);
+            t = target();
+            t->throttle = 1;
+            for (size_t i = 0; i < t->comps.size(); i++)
+                if (t->comps[i].func == Func::Tank) t->prop[i] = 0;
+            {
+                int fires = 0;
+                for (size_t i = 0; i < t->comps.size(); i++)
+                    if (t->comps[i].func == Func::Engine && engineFiresNow(*t, t->comps[i]) && t->phys[i].thrustVac > 0) fires++;
+                std::fprintf(T.log, "rdvtest: dry vessel '%s': ignited %d stage %d, engines of the stage %d\n", t->name.c_str(), (int)t->ignited, t->stage, fires);
+            }
+            Vec3d r0 = t->r, v0 = t->v;
+            double tA = W.t, GM = U.bodies[t->ref].GM;
+            W.setWarp(11);
+            double w0 = GetTime();
+            W.update(0.05);
+            std::fprintf(T.log, "rdvtest: that frame took %.0f ms\n", (GetTime() - w0) * 1000);
+            t = target();
+            if (t) {
+                keplerPropagate(r0, v0, GM, W.t - tA);
+                double d = len(t->r - r0);
+                std::fprintf(T.log, "rdvtest: dry vessel with its throttle up after %.1f d at x1e7 (one frame): %.1f km from its orbit position\n", (W.t - tA) / DAY,
+                             d / 1e3);
+                check(d < 1000e3, "a vessel with dry tanks and its throttle up keeps pace with the world clock");
+            }
+        }
+        std::fprintf(T.log, "rdvtest: %s (%d failed)\n", bad ? "FAIL" : "all ok", bad);
+        return false;
+    }
+    return true;
+}
+
+// ------------------------------------------------------------------ the target's orbit near the active vessel (--rdvsweep)
+// every SAS mode / RCS / engine state of the target, the active vessel idle, translating on RCS or burning
+// its engine close by, at x1 and under time warp: the target (coasting, nobody flies it) keeps its orbit
+bool rdvSweepStep(App& app) {
+    World& W = app.world;
+    const Universe& U = W.U;
+    if (T.frames < 2) return true;
+    int bad = 0, n = 0;
+    const SAS modes[] = {SAS::Off, SAS::Stability, SAS::Prograde, SAS::Target, SAS::Dock, SAS::Burn, SAS::Ascent};
+    for (SAS md : modes)
+        for (int rcs = 0; rcs < 2; rcs++)
+            for (int ign = 0; ign < 2; ign++)
+                for (int act = 0; act < 3; act++) {
+                        // (a 400 km orbit: one through the air loses height to its drag)
+                        W.newGame(Settings{});
+                        app.gameStarted = true;
+                        W.launchInOrbit(craftNamed("Station Core Module"), -1, 0);
+                        Vessel* t0 = W.activeVessel();
+                        int tid = t0->id;
+                        // the target's state as its pilot left it (ignited: with the throttle up as well)
+                        t0->sas = md;
+                        t0->rcs = rcs;
+                        if (ign && !t0->ignited) W.stage(*t0);
+                        if (ign) W.activeVessel()->throttle = 1;
+                        W.launchInOrbit(craftNamed("Crew Ferry"), tid, 60);
+                        Vessel* a = W.activeVessel();
+                        a->targetVessel = tid;
+                        Vessel* t = nullptr;
+                        for (Vessel& o : W.vessels)
+                            if (o.id == tid) t = &o;
+                        t->targetVessel = a->id;
+                        Conic c0 = stateToConic(t->r, t->v, U.bodies[t->ref].GM);
+                        double worst = 0, worstE = 0;
+                        std::string when;
+                        auto watch = [&](const char* w) {
+                            Vessel* tt = nullptr;
+                            for (Vessel& o : W.vessels)
+                                if (o.id == tid && !o.destroyed) tt = &o;
+                            if (!tt) { worst = 1e30; when = std::string(w) + " (gone)"; return; }
+                            Conic c = stateToConic(tt->r, tt->v, U.bodies[tt->ref].GM);
+                            double d = std::fabs(c.a - c0.a), de = std::fabs(c.e - c0.e);
+                            if (d > worst) { worst = d; when = w; }
+                            worstE = std::max(worstE, de);
+                        };
+                        for (int k = 0; k < 400; k++) {
+                            a = W.activeVessel();
+                            if (!a) break;
+                            ControlInput in;
+                            if (act == 1) {
+                                a->rcs = true;
+                                in.tz = (k / 50) % 2 ? -1 : 1;
+                                in.tx = 0.5;
+                            }
+                            if (act == 2) {
+                                if (!a->ignited) W.stage(*a);
+                                a->sas = SAS::Prograde;
+                                a->throttle = k < 200 ? 1 : 0;
+                            }
+                            W.input = in;
+                            int wi = k < 250 ? 0 : k < 300 ? 4 : k < 350 ? 7 : 10;
+                            if (act == 2 && k < 200) wi = 0;
+                            W.setWarp(wi);
+                            W.update(0.05);
+                            watch(("frame " + std::to_string(k) + " warp " + std::to_string(W.warpIndex)).c_str());
+                        }
+                        W.input = {};
+                        bool ok = worst < 50.0 && worstE < 1e-5;
+                        n++;
+                        if (!ok)
+                            std::fprintf(T.log, "rdvsweep: target sas %-10s rcs %d ignited %d, active %s: target a changed %.3f km e %.2e (worst at %s) -> FAIL\n",
+                                         sasName(md), rcs, ign, act == 0 ? "idle" : act == 1 ? "RCS" : "engine", worst / 1e3, worstE, when.c_str());
+                        bad += !ok;
+                        std::fflush(T.log);
+                    }
+    std::fprintf(T.log, "rdvsweep: %d cases, %s (%d failed)\n", n, bad ? "FAIL" : "all ok", bad);
+    return false;
+}
+
+// ------------------------------------------------------------------ a saved game's vessels over time (--savecheck <file>)
+// (diagnostics) every vessel of a save: its orbit and state; then the game runs at x1 and under time warp and
+// every change of a coasting vessel's orbit is reported
+std::string g_saveCheck;
+bool saveCheckStep(App& app) {
+    World& W = app.world;
+    const Universe& U = W.U;
+    if (T.frames < 2) return true;
+    std::ifstream in(g_saveCheck, std::ios::binary);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    bool ok = W.deserialize(text);
+    std::fprintf(T.log, "savecheck: loaded %d (%zu vessels), t %.0f, active %d\n", (int)ok, W.vessels.size(), W.t, W.active);
+    if (!ok) return false;
+    app.gameStarted = true;
+    Vessel* av = W.activeVessel();
+    auto info = [&](const Vessel& v, const char* tag) {
+        const Body& b = U.bodies[v.ref];
+        Conic c = stateToConic(v.r, v.v, b.GM);
+        std::fprintf(T.log, "  %s id %d '%s' ref %s landed %d debris %d destroyed %d: a %.3f km e %.6f pe %.1f km ap %.1f km | ignited %d thr %.2f sas %s rcs %d stage %d "
+                            "sail %d target %d\n",
+                     tag, v.id, v.name.c_str(), b.name.c_str(), (int)v.landed, (int)v.debris, (int)v.destroyed, c.a / 1e3, c.e, (c.pe - b.radius) / 1e3,
+                     c.e < 1 ? (c.ap - b.radius) / 1e3 : -1.0, (int)v.ignited, v.throttle, sasName(v.sas), (int)v.rcs, v.stage, (int)v.sailDeployed, v.targetVessel);
+    };
+    for (const Vessel& v : W.vessels) info(v, &v == av ? "ACTIVE" : "      ");
+    std::fflush(T.log);
+    struct Ref { int id; double a, e; double worst; };
+    std::vector<Ref> refs;
+    for (const Vessel& v : W.vessels)
+        if (!v.destroyed && !v.landed) {
+            Conic c = stateToConic(v.r, v.v, U.bodies[v.ref].GM);
+            refs.push_back({v.id, c.a, c.e, 0});
+        }
+    auto watch = [&](const std::string& when) {
+        for (Ref& r : refs)
+            for (const Vessel& v : W.vessels) {
+                if (v.id != r.id || v.destroyed) continue;
+                Conic c = stateToConic(v.r, v.v, U.bodies[v.ref].GM);
+                double d = std::fabs(c.a - r.a);
+                if (d > r.worst * 2 + 100) {
+                    std::fprintf(T.log, "savecheck: [%s] id %d '%s' a %.3f km -> %.3f km (e %.6f -> %.6f) ref %s alt %.1f km ignited %d thr %.2f sas %s active %d\n",
+                                 when.c_str(), v.id, v.name.c_str(), r.a / 1e3, c.a / 1e3, r.e, c.e, U.bodies[v.ref].name.c_str(),
+                                 (len(v.r) - U.bodies[v.ref].radius) / 1e3, (int)v.ignited, v.throttle, sasName(v.sas), (int)(&v == W.activeVessel()));
+                    std::fflush(T.log);
+                    r.worst = d;
+                }
+            }
+    };
+    double t0 = W.t;
+    for (int wi : {0, 2, 4, 5, 6, 7, 8, 9, 10}) {
+        for (int k = 0; k < (wi == 0 ? 400 : 120); k++) {
+            W.setWarp(wi);
+            W.update(0.05);
+            watch("warp " + std::to_string(wi) + " (asked) " + std::to_string(W.warpIndex) + " (got) t+" + std::to_string((int)(W.t - t0)));
+        }
+    }
+    std::fprintf(T.log, "savecheck: ran %.0f s\n", W.t - t0);
+    for (const Vessel& v : W.vessels) info(v, &v == W.activeVessel() ? "ACTIVE" : "      ");
+    return false;
+}
+
 // ------------------------------------------------------------------ rovers (--rovertest)
 // the lunar rover at Hadley and the Mars rover at Jezero: drive (W), steer (D), stop and park (keys
 // released), drive off again, reverse (S); speed, heading, battery and the warp allowed while rolling
@@ -5575,6 +5883,9 @@ bool autotestInit(App& app, int argc, char** argv) {
         if (std::string(argv[i]) == "--basetest") T.phase = 490;
         if (std::string(argv[i]) == "--missiontest") T.phase = 500;
         if (std::string(argv[i]) == "--escapetest") T.phase = 510;
+        if (std::string(argv[i]) == "--rdvtest") T.phase = 520;
+        if (std::string(argv[i]) == "--rdvsweep") T.phase = 530;
+        if (std::string(argv[i]) == "--savecheck" && i + 1 < argc) { T.phase = 540; g_saveCheck = argv[i + 1]; }
         if (std::string(argv[i]) == "--solartest") T.phase = 460;
         if (std::string(argv[i]) == "--startest") T.phase = 470;
         if (std::string(argv[i]) == "--bodytest") T.phase = 480;
@@ -7031,6 +7342,15 @@ bool autotestStep(App& app) {
         break;
     case 510:
         if (!escapeTestStep(app)) T.phase = 9;
+        break;
+    case 520:
+        if (!rdvTestStep(app)) T.phase = 9;
+        break;
+    case 530:
+        if (!rdvSweepStep(app)) T.phase = 9;
+        break;
+    case 540:
+        if (!saveCheckStep(app)) T.phase = 9;
         break;
     case 9:
         logState(app, "end");

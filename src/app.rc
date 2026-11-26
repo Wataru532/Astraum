@@ -55,8 +55,8 @@
 216 RCDATA "../assets/maps/mars_height_hi.pak"
 
 1 VERSIONINFO
-FILEVERSION 1,1,2,0
-PRODUCTVERSION 1,1,2,0
+FILEVERSION 1,1,3,0
+PRODUCTVERSION 1,1,3,0
 FILEOS 0x40004
 FILETYPE 0x1
 BEGIN
@@ -65,11 +65,11 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "FileDescription", "Astraum - space exploration simulator"
-            VALUE "FileVersion", "1.1.2"
+            VALUE "FileVersion", "1.1.3"
             VALUE "InternalName", "Astraum"
             VALUE "OriginalFilename", "Astraum.exe"
             VALUE "ProductName", "Astraum"
-            VALUE "ProductVersion", "1.1.2"
+            VALUE "ProductVersion", "1.1.3"
         END
     END
     BLOCK "VarFileInfo"

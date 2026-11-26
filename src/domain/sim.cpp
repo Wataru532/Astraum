@@ -2486,11 +2486,16 @@ static double advanceVessel(World& W, Vessel& v, double t0, double dt, bool isAc
         double alt = len(v.r) - b.radius;
         bool inAtm = b.atmTop > 0 && alt < b.atmTop;
         int refBefore = v.ref;
-        if (thrusting || inAtm || v.landed || v.rolling) {
+        bool numeric = thrusting || inAtm || v.landed || v.rolling;
+        // another vessel out of its physics steps in space: the rest of the frame on rails. (Its steps went down to
+        // 1 s and the loop guard ended the frame early: under fast warp the vessel fell days behind the world
+        // clock each frame - a rendezvous target jumped along its orbit)
+        if (numeric && !isActive && numericSteps >= maxNumericSteps && !inAtm && !v.landed && !v.rolling) numeric = false;
+        if (numeric) {
             double h = std::min(rem, numericDt(W, v));
             if (numericSteps >= maxNumericSteps) {
-                if (isActive) break;   // the world clock stops with the active vessel
-                h = std::min(rem, 1.0); // others: coarse but bounded steps
+                if (isActive) break;                   // the world clock stops with the active vessel
+                h = std::min(rem, std::max(h, 1.0)); // others (in the air or on the ground): coarse but bounded steps
             }
             numericStep(W, v, tt, h, isActive, highWarp, S0, S1);
             numericSteps++;
@@ -3198,6 +3203,9 @@ void World::stage(Vessel& v) {
 
 int World::launch(const Craft& craft) {
     diag::breadcrumb("launch: %s (%d comps)", craft.name.c_str(), (int)craft.comps.size());
+    // the vessel flown so far coasts from now on, as on a switch (v1.1.3: its throttle stayed up - a module put
+    // into orbit went on burning unseen while the next rocket flew toward it)
+    if (Vessel* cur = activeVessel()) cur->throttle = 0;
     // the pad: an Earth launch site, or the launch complex of a surface base
     PadSite pad = padSite();
     int padBody = pad.body;
@@ -3665,6 +3673,7 @@ bool World::undock(Vessel& v, int port) {
     }
     bool flyNew = &v == activeVessel() && nv.hasControl && !lighterLeaves ? false : (&v == activeVessel() && nv.hasControl);
     std::string nm = nv.name;
+    if (flyNew) v.throttle = 0; // (the part left behind coasts)
     vessels.push_back(std::move(nv));
     if (flyNew) active = (int)vessels.size() - 1;
     dockHoldUntil = t + 10; // (the springs push the two apart first)
@@ -4428,6 +4437,9 @@ bool World::deserialize(const std::string& text) {
             if (w.vessels[i].id == activeId) w.active = (int)i;
     if (w.active >= (int)w.vessels.size()) w.active = w.vessels.empty() ? -1 : 0;
     if (w.active < -1) w.active = -1;
+    // only the vessel flown has its throttle up (older saves kept it on vessels left behind by a launch)
+    for (int i = 0; i < (int)w.vessels.size(); i++)
+        if (i != w.active) w.vessels[i].throttle = 0;
     w.nextId = std::clamp(w.nextId, (int)w.vessels.size() + 1, 1 << 24);
     for (const SurfaceBase& b : w.bases) w.nextBaseId = std::max(w.nextBaseId, b.id + 1);
     w.repairExplored();
