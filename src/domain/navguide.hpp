@@ -13,7 +13,7 @@ struct Vessel;
 
 namespace navg {
 
-enum class Mode { None, Message, Transfer, Coast, Proximity, Docked };
+enum class Mode { None, Message, Transfer, Coast, Proximity, Docked, Launch };
 
 struct Guidance {
     Mode mode = Mode::None;
@@ -34,7 +34,23 @@ struct Guidance {
     bool viaWaypoint = false;   // moving to the approach corridor first (beside / behind the target)
     // the burn direction (world axes, length = m/s): navball marker and SAS "Burn"
     Vec3d burn;
+    // ---- Launch (on the ground, the target in orbit around the same body)
+    double tLaunch = 0;         // simulation time of the next launch window (the site passes under the target's plane)
+    double launchAzDeg = 0;     // heading along the target's plane there (from north, clockwise) [deg]
+    double planeOffDeg = 0;     // the site's distance from the plane at the window (0: in it; > 0: it never gets closer)
+    double offNowDeg = 0;       // ... now
 };
+
+// The next launch window from a site toward a target's orbit: the first time from `now` at which the site comes
+// closest to the target's orbital plane (it is in the plane twice a day when the inclination exceeds the site's
+// latitude, else nearest once a day). siteFixed: the site's direction in the body-fixed frame; h: the plane's
+// normal (inertial). Returns false for a body that does not turn.
+struct LaunchWindow {
+    double t = 0;        // simulation time
+    double azDeg = 0;    // the heading along the plane there (from north, clockwise)
+    double offDeg = 0;   // the site's distance from the plane then [deg]
+};
+bool launchWindow(const World& W, int body, const Vec3d& siteFixed, const Vec3d& h, double now, LaunchWindow& out);
 
 // compute the guidance for vessel a toward vessel t (call every frame; the transfer search runs at most
 // every `searchEvery` real seconds and keeps its plan while it stays good)

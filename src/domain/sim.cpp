@@ -588,6 +588,29 @@ static Vec3d ascentDirection(const World& W, const Vessel& v) {
     Vec3d hdir = len(hv) > 1 ? norm(hv) : cross(pole, up);
     if (len(hdir) < 1e-6) hdir = anyPerp(up);
     hdir = norm(hdir);
+    // a target vessel in orbit around this body, the site (nearly) under its orbital plane (the launch window of the
+    // navigation panel): the ascent goes into that plane. The horizontal thrust points where the velocity still lacks
+    // of a circular orbit along the plane, so the body's turning speed across it is taken out on the way; at most
+    // 30 degrees off the plane's direction, never backwards
+    if (v.targetVessel >= 0)
+        for (const Vessel& o : W.vessels) {
+            if (o.id != v.targetVessel || o.destroyed || o.landed || o.ref != v.ref) continue;
+            Vec3d hT = cross(o.r, o.v);
+            if (len(hT) < 1e-6) break;
+            hT = norm(hT);
+            if (std::fabs(dot(up, hT)) > std::sin(5 * DEG)) break;
+            Vec3d dW = cross(hT, up);
+            if (len(dW) < 1e-6) break;
+            dW = norm(dW);
+            Vec3d go = dW * std::sqrt(b.GM / r) - hv;
+            go = go - up * dot(go, up);
+            double along = std::max(dot(go, dW), 0.3 * len(hv) + 50);
+            Vec3d side = go - dW * dot(go, dW);
+            double sl = len(side), sMax = along * std::tan(30 * DEG);
+            if (sl > sMax) side = side * (sMax / sl);
+            hdir = norm(dW * along + side);
+            break;
+        }
     const double turnStart = b.atmTop > 0 ? 800.0 : 150.0;
     if (alt < turnStart) return up;
     // a stack whose liquid core can hardly carry itself once its solid boosters are gone (the Space Shuttle:

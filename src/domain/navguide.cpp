@@ -208,12 +208,86 @@ Found search(Snap S, Found cur) {
 }
 } // namespace
 
+// ------------------------------------------------------------------ launch window from the ground
+// s(t) = (site direction at t) . h: the sine of the site's distance from the plane. Over one turn of the body
+// it runs like sin(lat) cos(i) + cos(lat) sin(i) cos(theta): |s| has its first local minimum at the next crossing
+// (zero) or, when the plane never comes over the site, where the two are nearest. Sampled over a little more than
+// one turn, refined by golden-section search.
+bool launchWindow(const World& W, int body, const Vec3d& siteFixed, const Vec3d& h, double now, LaunchWindow& out) {
+    const Universe& U = W.U;
+    const Body& b = U.bodies[body];
+    if (std::fabs(b.rotRate) < 1e-12 || len(h) < 1e-12) return false;
+    Vec3d site = norm(siteFixed), hn = norm(h);
+    auto s = [&](double tt) { return std::fabs(dot(U.bodyRot(body, tt) * site, hn)); };
+    const double P = TAU / std::fabs(b.rotRate);
+    const int N = 720;
+    const double step = P * 1.05 / N;
+    double prev2 = s(now), prev = s(now + step);
+    double lo = -1, hi = -1;
+    {
+        // a plane that keeps the same angle to the site all day (an equatorial orbit): every time is as good
+        double mn = 1e9, mx = -1e9;
+        for (int k = 0; k <= 24; k++) {
+            double x = s(now + P * k / 24.0);
+            mn = std::min(mn, x);
+            mx = std::max(mx, x);
+        }
+        if (mx - mn < std::sin(0.2 * DEG)) { lo = now; hi = now; }
+    }
+    // in the plane right now (just past the crossing): the window is now
+    if (prev2 <= prev && prev2 < std::sin(0.3 * DEG)) { lo = now; hi = now + step; }
+    for (int k = 2; k <= N && lo < 0; k++) {
+        double cur = s(now + k * step);
+        if (prev <= prev2 && prev <= cur) { lo = now + (k - 2) * step; hi = now + k * step; }
+        prev2 = prev;
+        prev = cur;
+    }
+    if (lo < 0) return false;
+    lo = std::max(lo, now);
+    const double gr = 0.6180339887498949;
+    double x1 = hi - gr * (hi - lo), x2 = lo + gr * (hi - lo), f1 = s(x1), f2 = s(x2);
+    for (int it = 0; it < 40 && hi - lo > 0.5; it++) {
+        if (f1 < f2) { hi = x2; x2 = x1; f2 = f1; x1 = hi - gr * (hi - lo); f1 = s(x1); }
+        else { lo = x1; x1 = x2; f1 = f2; x2 = lo + gr * (hi - lo); f2 = s(x2); }
+    }
+    double tMin = 0.5 * (lo + hi);
+    out.offDeg = std::asin(clampd(s(tMin), 0, 1)) / DEG;
+    // lift-off a little before the crossing: the rocket keeps the site's speed across the plane until the ascent
+    // has taken it out (~1/2 of the way it drifts while that takes; measured with SAS Ascent: ~3 minutes)
+    out.t = out.offDeg < 0.5 ? std::max(now, tMin - 180.0) : tMin;
+    // the heading along the plane at the site then (the direction the plane moves through it)
+    Vec3d up = U.bodyRot(body, tMin) * site;
+    Vec3d pole = b.poleFrame.col(2);
+    Vec3d east = cross(pole, up);
+    if (len(east) < 1e-9) east = anyPerp(up);
+    east = norm(east);
+    Vec3d north = cross(up, east);
+    Vec3d d = cross(hn, up);
+    double az = len(d) > 1e-9 ? std::atan2(dot(d, east), dot(d, north)) / DEG : 90;
+    out.azDeg = az < 0 ? az + 360 : az;
+    return true;
+}
+
 Guidance compute(const World& W, const Vessel& a, const Vessel& t, double realNow, double searchEvery) {
     Guidance g;
     const Universe& U = W.U;
     if (a.landed) {
         g.mode = Mode::Message;
         g.message = trf("Reach orbit first: the rendezvous with {0} is planned from there.", t.name);
+        if (t.ref == a.ref && !t.landed) {
+            Vec3d h = cross(t.r, t.v);
+            LaunchWindow lw;
+            if (len(h) > 0 && launchWindow(W, a.ref, a.landPos, h, W.t, lw)) {
+                g.mode = Mode::Launch;
+                g.tLaunch = lw.t;
+                g.launchAzDeg = lw.azDeg;
+                g.planeOffDeg = lw.offDeg;
+                g.offNowDeg = std::asin(clampd(std::fabs(dot(norm(U.bodyRot(a.ref, W.t) * a.landPos), norm(h))), 0, 1)) / DEG;
+                g.message = lw.offDeg < 0.5
+                                ? trf("Lift off at the window with SAS Ascent: it flies along the orbital plane of {0}. The rendezvous is planned in orbit.", tr(t.name))
+                                : trf("The orbital plane of {0} never passes over the site: at the window it comes nearest. The rest is a plane change in orbit.", tr(t.name));
+            }
+        }
         return g;
     }
     if (t.landed) {

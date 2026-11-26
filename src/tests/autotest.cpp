@@ -5501,6 +5501,321 @@ bool saveCheckStep(App& app) {
     return false;
 }
 
+// ------------------------------------------------------------------ launch window toward a vessel, night vision on the map (--launchwintest)
+// From Tanegashima (30.4 N) toward targets in three planes: inclined 51.6 degrees (crossed twice a day), 30.4 (just
+// reached, once a day) and 0 (never over the site: nearest once a day). The ISS-like one flown: warp to the window
+// on the pad, SAS Ascent into orbit - the two planes must agree; a launch off the window for comparison. Then the
+// map with night vision (image intensifier: a green picture) and the bright mode.
+bool launchWinTestStep(App& app) {
+    World& W = app.world;
+    const Universe& U = W.U;
+    static int bad = 0, stage = 0, tgtId = -1;
+    static double relOff = -1, tLift = 0;
+    int earth = U.find("Earth");
+    const Body& eb = U.bodies[earth];
+    auto check = [&](bool ok, const std::string& what) {
+        std::fprintf(T.log, "launchwin: %s -> %s\n", what.c_str(), ok ? "ok" : "FAIL");
+        std::fflush(T.log);
+        bad += !ok;
+    };
+    auto target = [&]() -> Vessel* {
+        for (Vessel& o : W.vessels)
+            if (o.id == tgtId && !o.destroyed) return &o;
+        return nullptr;
+    };
+    // a target in a circular 420 km orbit of inclination incDeg, its node at lanDeg (Earth's equatorial frame)
+    auto placeTarget = [&](double incDeg, double lanDeg) {
+        Settings st;
+        st.launchSite = 0; // Tanegashima
+        W.newGame(st);
+        app.gameStarted = true;
+        W.launchInOrbit(craftNamed("Station Core Module"), -1, 0);
+        Vessel* t = W.activeVessel();
+        tgtId = t->id;
+        Vec3d ex = eb.poleFrame.col(0), ey = eb.poleFrame.col(1), ez = eb.poleFrame.col(2);
+        double O = lanDeg * DEG, i = incDeg * DEG;
+        Vec3d node = ex * std::cos(O) + ey * std::sin(O);
+        Vec3d h = ez * std::cos(i) + cross(node, ez) * std::sin(i);
+        double R = eb.radius + 420e3;
+        t->r = node * R;
+        t->v = norm(cross(h, node)) * std::sqrt(eb.GM / R);
+        t->landed = false;
+        int vi = W.launch(craftFromDesign(builtinTemplates()[0]));
+        W.vessels[vi].targetVessel = tgtId;
+        return &W.vessels[vi];
+    };
+    auto relInc = [&](const Vessel& a, const Vessel& b) {
+        return std::acos(std::clamp(dot(norm(cross(a.r, a.v)), norm(cross(b.r, b.v))), -1.0, 1.0)) / DEG;
+    };
+    if (T.frames == 2) {
+        bad = 0;
+        struct C { double inc; const char* what; bool crosses; };
+        for (C c : {C{51.6, "ISS-like 51.6 deg", true}, C{30.4009, "30.4 deg (the site's latitude)", true}, C{0.0, "equatorial", false}}) {
+            Vessel* a = placeTarget(c.inc, 40);
+            Vessel* t = target();
+            navg::Guidance g = navg::compute(W, *a, *t, 0, 1.0);
+            std::fprintf(T.log, "launchwin: %s: mode %d, window in %.2f h, heading %.1f deg, site %.2f deg from the plane now, %.2f deg at the window\n",
+                         c.what, (int)g.mode, (g.tLaunch - W.t) / 3600, g.launchAzDeg, g.offNowDeg, g.planeOffDeg);
+            bool ok = g.mode == navg::Mode::Launch && g.tLaunch >= W.t && g.tLaunch - W.t < 1.05 * DAY;
+            if (c.crosses) ok = ok && g.planeOffDeg < 0.3;
+            else ok = ok && std::fabs(g.planeOffDeg - 30.4) < 0.3 && std::fabs(g.launchAzDeg - 90) < 1;
+            if (c.inc > 40) ok = ok && (std::fabs(g.launchAzDeg - 43.4) < 4 || std::fabs(g.launchAzDeg - 136.6) < 4); // (sin az = cos i / cos lat)
+            check(ok, std::string("a launch window toward a target ") + c.what);
+            // the window found is the nearest: the site's distance from the plane there is a minimum
+            if (g.mode == navg::Mode::Launch) {
+                Vec3d h = norm(cross(t->r, t->v));
+                auto off = [&](double tt) { return std::fabs(dot(norm(U.bodyRot(earth, tt) * a->landPos), h)); };
+                // (the lift-off leads the nearest pass by 3 minutes when the plane crosses the site)
+                double tMin = g.tLaunch + (g.planeOffDeg < 0.5 && g.tLaunch > W.t + 1 ? 180.0 : 0.0);
+                double best = 1e9;
+                for (double tt = W.t; tt < tMin - 60; tt += 30) best = std::min(best, off(tt));
+                check(best >= std::sin(g.planeOffDeg * DEG) - 1e-4, std::string("no closer pass before the window ") + c.what);
+            }
+        }
+        // the ISS-like target: warp to the window on the pad, then fly SAS Ascent
+        Vessel* a = placeTarget(51.6, 40);
+        app.lastLaunched = craftFromDesign(builtinTemplates()[0]);
+        app.screen = Screen::Flight;
+        flightOnEnter(app);
+        flightDebugNav(true);
+        navg::Guidance g = navg::compute(W, *a, *target(), 0, 1.0);
+        W.startWarpTo(g.tLaunch - 30);
+        stage = 1;
+        return true;
+    }
+    if (T.frames < 4) return true;
+    Vessel* v = W.activeVessel();
+    if (!v || v->destroyed) {
+        check(false, "the rocket flies");
+        return false;
+    }
+    if (stage == 1) {
+        if (T.frames == 6) shot("90_launch_window_pad.png");
+        if (W.warpTo > 0) {
+            for (int k = 0; k < 4; k++) W.update(0.05);
+            return true;
+        }
+        navg::Guidance g = navg::compute(W, *v, *target(), 0, 1.0);
+        std::fprintf(T.log, "launchwin: the warp ended %.0f s before the window; site %.2f deg from the plane\n", g.tLaunch - W.t, g.offNowDeg);
+        check(g.offNowDeg < 1.0, "the warp to the window ends with the site under the target's plane");
+        shot("91_launch_window_open.png");
+        // lift off at the window
+        for (int k = 0; k < 400 && W.t < g.tLaunch - 1; k++) W.update(0.05);
+        v = W.activeVessel();
+        v->sas = SAS::Ascent;
+        v->throttle = 1;
+        if (!v->ignited) W.stage(*v);
+        tLift = W.t;
+        stage = 2;
+        return true;
+    }
+    if (stage == 2 || stage == 4) {
+        if (v->ascentPhase == 1 && len(v->r) - eb.radius > eb.atmTop) W.warpIndex = std::min(5, W.maxWarpIndex());
+        else if (W.warpIndex > 0) W.warpIndex = 0;
+        for (int k = 0; k < 8 && !v->destroyed && v->sas == SAS::Ascent; k++) {
+            W.update(0.05);
+            tfStaging(app, v);
+        }
+        if (W.t - tLift > 6000) { // (from the lift-off: the rocket waited on the pad for the window)
+            check(false, "the ascent reaches an orbit");
+            return false;
+        }
+        if (v->sas == SAS::Ascent) return true;
+        Vessel* t = target();
+        Conic c = stateToConic(v->r, v->v, eb.GM);
+        double ri = t ? relInc(*v, *t) : 99;
+        std::fprintf(T.log, "launchwin: %s: %.0f x %.0f km, inclination to the equator %.2f deg, %.2f deg between the planes\n",
+                     stage == 2 ? "SAS Ascent at the window" : "SAS Ascent off the window (6 h later)", (c.pe - eb.radius) / 1e3, (c.ap - eb.radius) / 1e3,
+                     std::acos(std::clamp(dot(norm(cross(v->r, v->v)), eb.poleFrame.col(2)), -1.0, 1.0)) / DEG, ri);
+        if (stage == 2) {
+            check(c.valid && c.e < 1 && c.pe - eb.radius > 150e3, "the ascent at the window reaches orbit");
+            check(ri < 0.6, "the ascent at the window puts the rocket into the target's plane");
+            relOff = ri;
+            // the same off the window: the old due-east ascent
+            Vessel* a = placeTarget(51.6, 40);
+            navg::Guidance g = navg::compute(W, *a, *target(), 0, 1.0);
+            W.t = g.tLaunch + 6 * 3600;
+            W.refreshStates();
+            a = W.activeVessel();
+            a->sas = SAS::Ascent;
+            a->throttle = 1;
+            if (!a->ignited) W.stage(*a);
+            tLift = W.t;
+            flightOnEnter(app);
+            stage = 4;
+            return true;
+        }
+        check(ri > 10, "off the window the ascent flies due east as before (a large plane difference)");
+        // night vision on the map
+        flightDebugSetMap(true, 3.0e7);
+        flightDebugNightMode(1);
+        stage = 5;
+        T.t0 = T.frames;
+        return true;
+    }
+    if (stage == 5) {
+        if (T.frames < T.t0 + 4) return true;
+        Image im = LoadImageFromScreen();
+        double r = 0, gsum = 0, bl = 0;
+        int n = 0;
+        Color* px = LoadImageColors(im);
+        // (the Earth in the middle of the picture: the panels around are drawn after the night vision)
+        for (int y = im.height * 45 / 100; y < im.height * 70 / 100; y += 5)
+            for (int x = im.width * 27 / 100; x < im.width * 48 / 100; x += 5) {
+                Color c = px[y * im.width + x];
+                r += c.r;
+                gsum += c.g;
+                bl += c.b;
+                n++;
+            }
+        UnloadImageColors(px);
+        UnloadImage(im);
+        r /= n; gsum /= n; bl /= n;
+        std::fprintf(T.log, "launchwin: the map with the image intensifier: mean colour %.1f %.1f %.1f\n", r, gsum, bl);
+        check(gsum > 1.25 * r + 2 && gsum > 1.25 * bl + 2, "night vision works on the map (a green picture)");
+        shot("92_map_night_vision.png");
+        flightDebugNightMode(2);
+        stage = 6;
+        T.t0 = T.frames;
+        return true;
+    }
+    if (stage == 6) {
+        if (T.frames < T.t0 + 4) return true;
+        shot("93_map_night_bright.png");
+        flightDebugNightMode(0);
+        flightDebugSetMap(false, 0);
+        std::fprintf(T.log, "launchwin: %s (%d failed)\n", bad ? "FAIL" : "all ok", bad);
+        return false;
+    }
+    return true;
+}
+
+// ------------------------------------------------------------------ realistic shadows (--shadowtest)
+// The physically based mode with shadow maps: a rocket on the Tanegashima pad in the afternoon sun, a rover on the
+// Moon, two vessels side by side in orbit - each with the shadows on and off (the blob shadows). The map must be
+// available; with it the ground under the scene is darker where the shadows fall; the frame cost is logged.
+bool shadowTestStep(App& app) {
+    World& W = app.world;
+    const Universe& U = W.U;
+    static int bad = 0, scene = 0;
+    static double msOn = 0;
+    static std::vector<float> lumOn;
+    auto check = [&](bool ok, const std::string& what) {
+        std::fprintf(T.log, "shadowtest: %s -> %s\n", what.c_str(), ok ? "ok" : "FAIL");
+        std::fflush(T.log);
+        bad += !ok;
+    };
+    // the luminance of the view on a grid (the HUD hidden)
+    auto lum = [&]() {
+        std::vector<float> out;
+        Image im = LoadImageFromScreen();
+        Color* px = LoadImageColors(im);
+        for (int y = 0; y < im.height; y += 4)
+            for (int x = 0; x < im.width; x += 4) {
+                Color c = px[y * im.width + x];
+                out.push_back(0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b);
+            }
+        UnloadImageColors(px);
+        UnloadImage(im);
+        return out;
+    };
+    int earth = U.find("Earth"), moon = U.find("Moon");
+    const char* names[] = {"pad", "moon", "orbit"};
+    auto setup = [&](int sc) {
+        W.newGame(Settings{});
+        app.gameStarted = true;
+        if (sc == 0) {
+            W.launch(craftFromDesign(builtinTemplates()[0]));
+            sunAt(W, earth, siteDir(30.4009, 130.97), 30);
+            app.screen = Screen::Flight;
+            flightOnEnter(app);
+            flightDebugView(2.3, 0.35, 95, Vec3d{0, 0, 10});
+        } else if (sc == 1) {
+            Craft rover = craftNamed("Lunar Rover");
+            sunAt(W, moon, siteDir(26.13, 3.63), 20);
+            W.launchAircraft(rover, moon);
+            app.screen = Screen::Flight;
+            flightOnEnter(app);
+            flightDebugView(1.2, 0.45, 14, Vec3d{});
+        } else {
+            W.launchInOrbit(craftNamed("Station Core Module"), -1, 0);
+            int core = W.activeVessel()->id;
+            W.launchInOrbit(craftNamed("Crew Ferry"), core, 25);
+            // on the day side: both coast on until the sun shines on them
+            for (int k = 0; k < 60; k++) {
+                bool sh = false;
+                Vec3d dir;
+                W.solarFluxAt(W.activeVessel()->ref, W.activeVessel()->r, &sh, &dir);
+                if (!sh) break;
+                for (Vessel& v : W.vessels) keplerPropagate(v.r, v.v, U.bodies[v.ref].GM, 120);
+                W.t += 120;
+                W.refreshStates();
+            }
+            app.screen = Screen::Flight;
+            flightOnEnter(app);
+            flightDebugView(0.8, 0.2, 60, Vec3d{});
+        }
+        app.hudHidden = true;
+    };
+    int f = T.frames;
+    if (f == 2) {
+        bad = 0;
+        scene = 0;
+        app.physicalShading = gfx::setPhysicalShading(true);
+        app.realShadows = gfx::setShadows(true, 1);
+        check(app.physicalShading && gfx::shadowsActive(), "physically based shading with realistic shadows is on");
+        setup(0);
+        return true;
+    }
+    // each scene: frames +0 setup .. +6 shadows on (shot, luminance, cost) .. +12 off (the same)
+    int base = 2 + scene * 16, k = f - base;
+    if (k == 6) T.t0 = GetTime();
+    if (k == 8) {
+        msOn = (GetTime() - T.t0) * 1000 / 2;
+        lumOn = lum();
+        shot(("94_shadows_" + std::string(names[scene]) + "_on.png").c_str());
+        gfx::setShadows(false, 1);
+        return true;
+    }
+    if (k == 12) T.t0 = GetTime();
+    if (k == 14) {
+        double ms = (GetTime() - T.t0) * 1000 / 2;
+        std::vector<float> l = lum();
+        shot(("94_shadows_" + std::string(names[scene]) + "_off.png").c_str());
+        // how much of the picture the shadows change (darker by more than 8 of 255)
+        double darker = 0;
+        size_t n = std::min(l.size(), lumOn.size());
+        for (size_t q = 0; q < n; q++) darker += lumOn[q] < l[q] - 8 ? 1 : 0;
+        darker /= std::max<size_t>(n, 1);
+        std::fprintf(T.log, "shadowtest: %s: %.1f %% of the picture darker with the shadows; ~%.1f ms per frame with them, ~%.1f ms without\n",
+                     names[scene], darker * 100, msOn, ms);
+        if (scene < 2) check(darker > 0.003, std::string("the shadows show in the ") + names[scene] + " scene");
+        gfx::setShadows(true, 1);
+        if (++scene >= 3) {
+            // the shadow pass inside the night-vision target (it must draw back into that target afterwards)
+            setup(0);
+            flightDebugNightMode(2);
+            return true;
+        }
+        setup(scene);
+        return true;
+    }
+    if (scene == 3 && k == 6) {
+        std::vector<float> l = lum();
+        double mean = 0;
+        for (float x : l) mean += x;
+        mean /= std::max<size_t>(l.size(), 1);
+        shot("94_shadows_pad_nightvision.png");
+        std::fprintf(T.log, "shadowtest: the pad with night vision (bright) and the shadows: mean luminance %.1f\n", mean);
+        check(mean > 20, "the shadows work with night vision (the view is drawn)");
+        flightDebugNightMode(0);
+        app.hudHidden = false;
+        std::fprintf(T.log, "shadowtest: %s (%d failed)\n", bad ? "FAIL" : "all ok", bad);
+        return false;
+    }
+    return true;
+}
+
 // ------------------------------------------------------------------ rovers (--rovertest)
 // the lunar rover at Hadley and the Mars rover at Jezero: drive (W), steer (D), stop and park (keys
 // released), drive off again, reverse (S); speed, heading, battery and the warp allowed while rolling
@@ -5885,6 +6200,8 @@ bool autotestInit(App& app, int argc, char** argv) {
         if (std::string(argv[i]) == "--escapetest") T.phase = 510;
         if (std::string(argv[i]) == "--rdvtest") T.phase = 520;
         if (std::string(argv[i]) == "--rdvsweep") T.phase = 530;
+        if (std::string(argv[i]) == "--launchwintest") T.phase = 550;
+        if (std::string(argv[i]) == "--shadowtest") T.phase = 560;
         if (std::string(argv[i]) == "--savecheck" && i + 1 < argc) { T.phase = 540; g_saveCheck = argv[i + 1]; }
         if (std::string(argv[i]) == "--solartest") T.phase = 460;
         if (std::string(argv[i]) == "--startest") T.phase = 470;
@@ -7348,6 +7665,12 @@ bool autotestStep(App& app) {
         break;
     case 530:
         if (!rdvSweepStep(app)) T.phase = 9;
+        break;
+    case 550:
+        if (!launchWinTestStep(app)) T.phase = 9;
+        break;
+    case 560:
+        if (!shadowTestStep(app)) T.phase = 9;
         break;
     case 540:
         if (!saveCheckStep(app)) T.phase = 9;

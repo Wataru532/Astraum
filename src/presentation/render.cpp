@@ -622,6 +622,12 @@ void main() {
         }
     }
 #ifdef PBR
+    // the shadows of the vessels and the pad on the ground (realistic shadows)
+    float vis = shadowVis(vW, normalize(mat3(bodyRot) * n), sunDir);
+#else
+    float vis = 1.0;
+#endif
+#ifdef PBR
     if (atmOn == 1 && kind != 3) {
         // the ground point [km from the centre]; the flat triangles of a coarse cap sag below the sphere between
         // their corners (km on a gas giant: the sun "set" there and only the blue air was left), so it is lifted
@@ -633,7 +639,7 @@ void main() {
         // skylight: blue, as much as the sun is up at that point
         float el = clamp(dot(normalize(P), sunDir) + 0.15, 0.0, 1.0);
         vec3 skyAmb = vec3(0.30, 0.45, 0.80) * 0.14 * el;
-        vec3 c = albedo * NL * sunT * lightScale + albedo * skyAmb * lightScale;
+        vec3 c = albedo * NL * sunT * lightScale * vis + albedo * skyAmb * lightScale;
         if (dbgMode == 1) { finalColor = vec4(albedo, 1.0); return; }
         if (dbgMode == 2) { finalColor = vec4(sunT, 1.0); return; }
         if (dbgMode == 3) { finalColor = vec4(vTr, 1.0); return; }
@@ -644,7 +650,7 @@ void main() {
             vec3 Ng = normalize(mat3(bodyRot) * n);
             float shade = 1.0 - gCloud * (1.0 - cloudLow) * 0.75; // (under the cloud deck: its shadow)
             vec3 skyL = (atmColor * 0.55 + vec3(0.05)) * 0.30 * smoothstep(-0.15, 0.25, dot(Ng, sunDir)) * normalize(sunT + vec3(0.05)) * 1.7;
-            vec3 cw = seaLight(seaBody, Ng, seaN, seaA, seaFoam, V, sunT * shade, skyL, skyAmb) * lightScale;
+            vec3 cw = seaLight(seaBody, Ng, seaN, seaA, seaFoam, V, sunT * shade * vis, skyL, skyAmb) * lightScale;
             c = mix(c, cw, wSea);
         }
         c += mix(albedo, vec3(0.06, 0.16, 0.24), wSea) * nightLift;
@@ -653,7 +659,7 @@ void main() {
         return;
     }
 #endif
-    float diff = clamp((ndl + 0.03) / 1.03, 0.0, 1.0);
+    float diff = clamp((ndl + 0.03) / 1.03, 0.0, 1.0) * vis;
     vec3 R = reflect(-sunDir, Nw);
     float s = kind == 1 ? 0.0 : pow(max(dot(R, V), 0.0), 40.0) * spec * diff; // (Earth's sea: below)
     vec3 c = albedo * (diff * lightScale + 0.03) + vec3(1.0, 0.95, 0.85) * s * 0.5 * lightScale;
@@ -661,7 +667,7 @@ void main() {
         vec3 Ng = normalize(mat3(bodyRot) * n);
         float shade = 1.0 - gCloud * (1.0 - cloudLow) * 0.75;
         float el = dot(Ng, sunDir);
-        vec3 sunL = vec3(1.0, 0.95, 0.85) * mix(vec3(1.0, 0.62, 0.42), vec3(1.0), smoothstep(0.0, 0.3, el)) * shade;
+        vec3 sunL = vec3(1.0, 0.95, 0.85) * mix(vec3(1.0, 0.62, 0.42), vec3(1.0), smoothstep(0.0, 0.3, el)) * shade * vis;
         vec3 skyL = (atmColor * 0.55 + vec3(0.05)) * 0.30 * smoothstep(-0.15, 0.25, el);
         vec3 cw = seaLight(seaBody, Ng, seaN, seaA, seaFoam, V, sunL, skyL, vec3(0.03)) * lightScale;
         c = mix(c, cw, wSea);
@@ -923,6 +929,7 @@ void main() {
         float NV = max(dot(N, V), 1e-4);
         vec3 c = vec3(0.0);
         float NL = max(dot(N, lightDir), 0.0);
+        float vis = NL > 0.0 ? shadowVis(vW, N, lightDir) : 1.0; // (the shadows of other parts and of the pad)
         if (NL > 0.0) {
             vec3 Hh = normalize(lightDir + V);
             float NH = max(dot(N, Hh), 0.0), VH = max(dot(V, Hh), 0.0);
@@ -933,7 +940,7 @@ void main() {
             vec3 F = F0 + (1.0 - F0) * pow(1.0 - VH, 5.0);
             vec3 spec = Dd * G * F / max(4.0 * NL * NV, 1e-4);
             vec3 kd = (1.0 - F) * (1.0 - metal);
-            c += (kd * base + spec * 3.14159265) * NL * lightI * sunTint;
+            c += (kd * base + spec * 3.14159265) * NL * lightI * sunTint * vis;
         }
         vec3 Fa = F0 + (max(vec3(1.0 - rough), F0) - F0) * pow(1.0 - NV, 5.0);
         float upk = dot(N, envUp) * 0.5 + 0.5;
@@ -953,7 +960,7 @@ void main() {
             float nl = max(dot(N, L), 0.0);
             c += base * (1.0 - metal) * nl * spotCol * (cone * att) + F0 * nl * spotCol * (cone * att) * 0.5;
         }
-        if (gMask > 0.0) c = mix(c, glassColor(N, V, lightDir, lightI, sunTint), gMask);
+        if (gMask > 0.0) c = mix(c, glassColor(N, V, lightDir, lightI * vis, sunTint), gMask);
         finalColor = vec4(c, alphaOut);
         return;
     }
@@ -1249,6 +1256,9 @@ int g_fin = 0;
 Vector2 g_uv{1, 1};
 Vector3 g_scale{1, 1, 1};
 int g_shapeK = 0; // (shapeK of the next piece)
+// the shadow pass (realistic shadows): the parts only as depth seen from the sun, nothing see-through
+bool g_shadowPass = false;
+Material g_depthMat{};
 int shipNWin = -1, shipWinM[8] = {-1, -1, -1, -1, -1, -1, -1, -1}, shipWinA = -1, shipWinC = -1, shipCutOn = -1, shipCutLo = -1, shipCutHi = -1,
     shipCraftUp = -1, shipShapeK = -1;
 int shipObjScale = -1;
@@ -2430,10 +2440,60 @@ PlanetLocs PLstd, PLpbr;
 bool g_pbrLoaded = false, g_pbrFailed = false, g_pbr = false;
 int skyRes = -1, skyFwd = -1, skyRight = -1, skyUp = -1, skyTanY = -1, skyAspect = -1, skySun = -1;
 PlanetLocs SKL; // (the atmosphere uniforms of the sky program)
-std::string withPbr(const char* src) {
+// Realistic shadows (physically based mode): a depth map seen from the sun (orthographic) and percentage-closer
+// soft shadows - the blockers near a point are found first; the penumbra is as wide as the sun's disc makes it
+// over the distance from them to the point (sharp where a part stands on the ground, soft far from it), and
+// that much of the map is filtered (a golden-angle spiral, turned per pixel).
+const char* SHADOW_GLSL = R"(
+uniform int shadowOn;
+uniform sampler2D shadowMap;
+uniform mat4 shadowVP;
+uniform vec4 shadowA;   // x: 1 / resolution, y: depth range [m], z: map uv per metre, w: one texel [m]
+uniform float sunTan;   // the sun's angular diameter (tangent)
+uniform int shadowN;    // filter samples
+float shHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+vec2 shSpiral(int i, int n, float rot) {
+    float r = sqrt((float(i) + 0.5) / float(n));
+    float a = float(i) * 2.3999632 + rot;
+    return vec2(cos(a), sin(a)) * r;
+}
+// 1: in the sun, 0: in the shadow of a part. P: camera-relative position [m], N: surface normal, L: toward the sun
+float shadowVis(vec3 P, vec3 N, vec3 L) {
+    if (shadowOn == 0) return 1.0;
+    float NL = clamp(dot(N, L), 0.0, 1.0);
+    // off the surface along its normal by a texel and a half (more on faces turned from the sun): no self-shadow acne
+    vec3 Po = P + N * shadowA.w * (1.5 + 2.5 * (1.0 - NL));
+    vec4 q = shadowVP * vec4(Po, 1.0);
+    vec3 s = q.xyz / q.w * 0.5 + 0.5;
+    if (s.x <= 0.0 || s.y <= 0.0 || s.x >= 1.0 || s.y >= 1.0 || s.z >= 1.0 || s.z <= 0.0) return 1.0;
+    float zr = s.z - shadowA.w / shadowA.y;
+    float rot = shHash(gl_FragCoord.xy) * 6.2831853;
+    // blockers within the widest penumbra cared for (60 m from the point)
+    float searchUV = max(2.0 * shadowA.x, 60.0 * sunTan * shadowA.z);
+    float sum = 0.0, nb = 0.0;
+    for (int i = 0; i < 16; i++) {
+        float d = texture(shadowMap, s.xy + shSpiral(i, 16, rot) * searchUV).r;
+        if (d < zr) { sum += d; nb += 1.0; }
+    }
+    if (nb < 0.5) return 1.0;
+    float dist = (zr - sum / nb) * shadowA.y; // from the blockers to the point [m]
+    float filt = clamp(dist * sunTan * shadowA.z, 1.2 * shadowA.x, searchUV);
+    float lit = 0.0;
+    for (int i = 0; i < 64; i++) {
+        if (i >= shadowN) break;
+        float d = texture(shadowMap, s.xy + shSpiral(i, shadowN, rot + 1.0) * filt).r;
+        lit += d < zr ? 0.0 : 1.0;
+    }
+    float v = lit / float(shadowN);
+    vec2 e = min(s.xy, 1.0 - s.xy);
+    return mix(1.0, v, smoothstep(0.0, 0.04, min(e.x, e.y))); // (faded out at the edge of the map)
+}
+)";
+
+std::string withPbr(const char* src, bool fragment = false) {
     std::string s = src;
     size_t e = s.find('\n');
-    return s.substr(0, e + 1) + "#define PBR 1\n" + std::string(ATMO_GLSL) + s.substr(e + 1);
+    return s.substr(0, e + 1) + "#define PBR 1\n" + std::string(ATMO_GLSL) + (fragment ? SHADOW_GLSL : "") + s.substr(e + 1);
 }
 bool shaderOk(const Shader& sh) { return sh.id != 0 && sh.id != rlGetShaderIdDefault() && sh.locs != nullptr; }
 
@@ -2625,6 +2685,7 @@ void drawStarfield(float brightness) {
 }
 
 void drawGlow(Vector3 pos, float size, Color c) {
+    if (g_shadowPass) return;
     BeginBlendMode(BLEND_ADDITIVE);
     rlDisableDepthMask();
     facingBillboard(glowTex, pos, size, c);
@@ -2849,6 +2910,13 @@ void envSet(const Vec3d& up, Vector3 sky, Vector3 ground) {
 
 float g_ghost = 1.0f; // opacity of the parts being drawn (hidden parts in the factory: faint)
 void piece(const DrawCtx& c, const Mesh& m, const Matrix& local, Color col, float emissive = 0) {
+    if (g_shadowPass) {
+        g_scale = {1, 1, 1};
+        g_shapeK = 0;
+        if (col.a < 200 || g_ghost < 1.0f) return;
+        DrawMesh(m, g_depthMat, MatrixMultiply(local, c.base));
+        return;
+    }
     if (g_ghost < 1.0f) col.a = (unsigned char)(col.a * g_ghost);
     shipMat.maps[MATERIAL_MAP_DIFFUSE].color = col;
     setF(shipShader, shipEmissive, emissive);
@@ -4670,6 +4738,7 @@ void drawCraft(const CraftVisual& cv, const Mat3d& rot, const Vec3d& origin, con
         rlEnableDepthMask();
         EndBlendMode();
     }
+    if (g_shadowPass) return; // (the glowing effects below cast no shadow)
     if (cv.plasma > 0.01f && !comps.empty()) {
         // entry heating: glowing shock layer on the side facing the flow, a trailing plasma wake and
         // sparks shed by the hot (ablating) surface
@@ -4944,6 +5013,7 @@ void drawGroundShadow(const Vec3d& a, const Vec3d& b, const Vec3d& up, double ha
 namespace gfx {
 namespace {
 void facingBillboard(Texture2D tex, Vector3 pos, float size, Color c) {
+    if (g_shadowPass) return;
     Matrix v = MatrixLookAt(curCam.position, curCam.target, curCam.up);
     Vector3 up{v.m1, v.m5, v.m9};
     Rectangle src{0, 0, (float)tex.width, (float)tex.height};
@@ -4958,7 +5028,7 @@ void setDetailRange(float k) {
 bool setPhysicalShading(bool on) {
     if (on && !g_pbrLoaded && !g_pbrFailed) {
         // compile the physically based variants once (a failure leaves the standard look in place)
-        std::string pfs = withPbr(PLANET_FS), sfs = withPbr(SHIP_FS);
+        std::string pfs = withPbr(PLANET_FS, true), sfs = withPbr(SHIP_FS, true);
         std::string kfs = std::string("#version 330\n") + ATMO_GLSL + SKY_FS_MAIN;
         std::string pvs = withPbr(PLANET_VS);
         planetPbr = LoadShaderFromMemory(pvs.c_str(), pfs.c_str());
@@ -4995,6 +5065,152 @@ bool setPhysicalShading(bool on) {
     return use == on;
 }
 bool physicalShading() { return g_pbr; }
+
+// ------------------------------------------------------------------ realistic shadows (shadow map + PCSS)
+namespace {
+const char* DEPTH_VS = R"(#version 330
+in vec3 vertexPosition;
+uniform mat4 mvp;
+void main() { gl_Position = mvp * vec4(vertexPosition, 1.0); }
+)";
+const char* DEPTH_FS = R"(#version 330
+out vec4 finalColor;
+void main() { finalColor = vec4(1.0); }
+)";
+unsigned g_shFbo = 0, g_shTex = 0;
+int g_shRes = 0, g_shQ = 1;
+bool g_shOn = false, g_shFail = false, g_shReady = false;
+Shader g_depthSh{};
+struct ShLocs { int on = -1, vp = -1, a = -1, sun = -1, n = -1; };
+ShLocs g_shLocPl, g_shLocShip;
+Matrix g_shSaveP{}, g_shSaveV{}, g_shVP{};
+float g_shA[4] = {0, 1, 1, 1};
+float g_shSunTan = 0.0093f;
+ShLocs shadowLocsOf(Shader& sh) {
+    ShLocs L;
+    L.on = GetShaderLocation(sh, "shadowOn");
+    L.vp = GetShaderLocation(sh, "shadowVP");
+    L.a = GetShaderLocation(sh, "shadowA");
+    L.sun = GetShaderLocation(sh, "sunTan");
+    L.n = GetShaderLocation(sh, "shadowN");
+    // the map is bound as the material's BRDF map (slot 10): raylib binds it and sets the sampler
+    sh.locs[SHADER_LOC_MAP_BRDF] = GetShaderLocation(sh, "shadowMap");
+    setI(sh, L.on, 0);
+    return L;
+}
+void releaseShadowMap() {
+    if (g_shFbo) rlUnloadFramebuffer(g_shFbo); // (deletes the depth texture attached to it)
+    g_shFbo = g_shTex = 0;
+    g_shRes = 0;
+    g_shReady = false;
+}
+bool ensureShadowMap() {
+    int res = g_shQ ? 4096 : 2048;
+    if (g_shFbo && g_shRes == res) return true;
+    releaseShadowMap();
+    if (g_shFail) return false;
+    if (!shaderOk(g_depthSh)) {
+        g_depthSh = LoadShaderFromMemory(DEPTH_VS, DEPTH_FS);
+        if (!shaderOk(g_depthSh)) {
+            g_shFail = true;
+            return false;
+        }
+        g_depthMat = LoadMaterialDefault();
+        g_depthMat.shader = g_depthSh;
+    }
+    if (g_shLocPl.on < 0 && shaderOk(planetPbr)) g_shLocPl = shadowLocsOf(planetPbr);
+    if (g_shLocShip.on < 0 && shaderOk(shipPbr)) g_shLocShip = shadowLocsOf(shipPbr);
+    g_shFbo = rlLoadFramebuffer();
+    if (!g_shFbo) {
+        g_shFail = true;
+        return false;
+    }
+    rlEnableFramebuffer(g_shFbo);
+    g_shTex = rlLoadTextureDepth(res, res, false);
+    if (g_shTex) rlFramebufferAttach(g_shFbo, g_shTex, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0);
+    bool ok = g_shTex && rlFramebufferComplete(g_shFbo);
+    rlDisableFramebuffer();
+    if (!ok) {
+        releaseShadowMap();
+        g_shFail = true;
+        TraceLog(LOG_WARNING, "realistic shadows: no depth render target on this graphics driver");
+        return false;
+    }
+    g_shRes = res;
+    return true;
+}
+void applyShadowUniforms(Shader& sh, const ShLocs& L, bool use) {
+    if (!shaderOk(sh) || L.on < 0) return;
+    setI(sh, L.on, use ? 1 : 0);
+    if (!use) return;
+    SetShaderValueMatrix(sh, L.vp, g_shVP);
+    SetShaderValue(sh, L.a, g_shA, SHADER_UNIFORM_VEC4);
+    setF(sh, L.sun, g_shSunTan);
+    setI(sh, L.n, g_shQ ? 32 : 16);
+}
+} // namespace
+
+bool setShadows(bool on, int quality) {
+    quality = std::clamp(quality, 0, 1);
+    if (quality != g_shQ) {
+        g_shQ = quality;
+        releaseShadowMap(); // (made again at the new size when next drawn)
+    }
+    g_shOn = on;
+    return !on || !g_shFail;
+}
+bool shadowsActive() { return g_shOn && g_pbr && !g_shFail; }
+bool shadowPassActive() { return g_shadowPass; }
+
+bool beginShadowPass(const Vec3d& center, const Vec3d& toSun, double radius, double back, double ahead) {
+    g_shReady = false;
+    if (!shadowsActive() || !ensureShadowMap() || len(toSun) < 1e-9 || radius <= 0) return false;
+    rlDrawRenderBatchActive();
+    g_shSaveP = rlGetMatrixProjection();
+    g_shSaveV = rlGetMatrixModelview();
+    rlEnableFramebuffer(g_shFbo);
+    rlViewport(0, 0, g_shRes, g_shRes);
+    rlEnableDepthMask();
+    rlClearScreenBuffers();
+    Vec3d L = norm(toSun);
+    Matrix V = MatrixLookAt(toF(center + L * back), toF(center), toF(anyPerp(L)));
+    Matrix P = MatrixOrtho(-radius, radius, -radius, radius, 0.0, back + ahead);
+    rlSetMatrixProjection(P);
+    rlSetMatrixModelview(V);
+    rlEnableDepthTest();
+    rlDisableBackfaceCulling(); // (thin panels and wings: both faces)
+    g_shVP = MatrixMultiply(V, P);
+    g_shA[0] = 1.0f / g_shRes;
+    g_shA[1] = (float)(back + ahead);
+    g_shA[2] = (float)(1.0 / (2 * radius));
+    g_shA[3] = (float)(2 * radius / g_shRes);
+    g_shadowPass = true;
+    return true;
+}
+
+void endShadowPass(unsigned prevFbo, int w, int h, double sunAngDiam) {
+    if (!g_shadowPass) return;
+    rlDrawRenderBatchActive();
+    g_shadowPass = false;
+    if (prevFbo) rlEnableFramebuffer(prevFbo);
+    else rlDisableFramebuffer();
+    rlViewport(0, 0, w, h);
+    rlSetMatrixProjection(g_shSaveP);
+    rlSetMatrixModelview(g_shSaveV);
+    rlEnableBackfaceCulling();
+    g_shSunTan = (float)std::tan(std::clamp(sunAngDiam, 1e-5, 0.3));
+    g_shReady = true;
+}
+
+void shadowReceive(bool on) {
+    bool use = on && g_shReady && g_pbr && g_shOn && g_shTex;
+    applyShadowUniforms(planetPbr, g_shLocPl, use);
+    applyShadowUniforms(shipPbr, g_shLocShip, use);
+    Texture2D t{};
+    if (use) t = Texture2D{g_shTex, g_shRes, g_shRes, 1, 19};
+    planetMat.maps[MATERIAL_MAP_BRDF].texture = t;
+    shipMat.maps[MATERIAL_MAP_BRDF].texture = t;
+}
 
 void setSunTint(Vector3 c) {
     if (g_pbr) setV3(shipShader, shipSunTint, c);

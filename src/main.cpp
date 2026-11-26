@@ -220,6 +220,7 @@ int main(int argc, char** argv) {
     gfx::setTerrainQuality(app.terrainQuality);
     gfx::setDetailRange(app.detailRange / 100.0f);
     if (app.physicalShading) app.physicalShading = gfx::setPhysicalShading(true);
+    gfx::setShadows(app.realShadows, app.shadowQuality);
     ui::setClickHook([] { sfx::play(sfx::Ev::Click); });
     gpumon::start();
     Settings def;

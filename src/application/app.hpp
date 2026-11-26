@@ -46,6 +46,8 @@ struct App {
     int terrainQuality = 2; // near-ground terrain detail: 0 Low .. 3 Ultra
     int detailRange = 100;  // how far the detailed terrain reaches [% of the standard range, 50..400]
     bool physicalShading = false; // physically based shading (GGX materials, scattering sky): heavy, off by default
+    bool realShadows = false;     // physically based mode: shadow maps with soft penumbrae (heavier still)
+    int shadowQuality = 1;        // shadow map 0: 2048 px, 1: 4096 px
     int fpsLimit = 1;       // index into FPS_LIMITS (0 = match the display)
     bool showFps = false;   // compact frame-rate overlay (Settings)
     bool debugOpen = false; // F3 debug screen (this session)

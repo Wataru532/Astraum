@@ -486,6 +486,26 @@ void settingsModal(App& app) {
         }
         y = wrap("GGX materials with Fresnel reflection, a sky computed from Rayleigh / Mie scattering, aerial perspective and sunlight reddened by the air. Needs a strong GPU.",
                  rx, y + 36, colW, 13, col::faint);
+        // detail of the physically based mode: realistic shadows (shadow maps)
+        if (app.physicalShading) {
+            y += 10;
+            bool sh = app.realShadows;
+            if (toggle({rx, y, colW, 32}, "Realistic shadows (heavy)", sh)) {
+                app.realShadows = gfx::setShadows(sh, app.shadowQuality) && sh;
+                if (sh && !app.realShadows) app.setStatus(tr("Realistic shadows are not available on this graphics driver"));
+                savePrefs(app);
+            }
+            y = wrap("Shadows of the vessels, the pad and the bases cast by the sun, on the ground and on each other. Their edges are as soft as the sun's disc makes them: sharp where a part touches the ground, blurred far from it.",
+                     rx, y + 36, colW, 13, col::faint) + 8;
+            if (app.realShadows) {
+                int hit = chipRow(rx, y, "Shadow resolution", {"2048", "4096"}, app.shadowQuality);
+                if (hit >= 0) {
+                    app.shadowQuality = hit;
+                    gfx::setShadows(app.realShadows, hit);
+                    savePrefs(app);
+                }
+            }
+        }
     }
     // ---- about: version, data credits and the licences of the libraries
     y += 22;

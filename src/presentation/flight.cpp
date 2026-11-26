@@ -619,6 +619,236 @@ void renderFlight(App& app, Vessel& av) {
         gfx::drawGlow(p, angSize(2.4 * g), c1);  // bright halo, ~4x the disc
         gfx::drawGlow(p, angSize(16.0 * g), c2); // wide glare
     };
+    // the pad, the bases and the vessels near the camera: drawn into the shadow map from the sun (shadowPass) and
+    // then into the view
+    double shMapR = 0; // (the shadow map's region: its half width [m] and centre; 0: none this frame)
+    Vec3d shMapC;
+    auto drawScene = [&](bool shadowPass) {
+        // ground under the vessels: the pad deck / apron near the launch complex, the body's surface elsewhere
+        bool padDrawn = false;
+        Vec3d padC, padE, padN, padU;
+        double padS = 0;
+        {
+            // launch complex at the selected site (body-fixed)
+            int earth = U.find("Earth");
+            if (ref == earth) {
+                const LaunchSite& site = LAUNCH_SITES[std::clamp(W.settings.launchSite, 0, LAUNCH_SITE_COUNT - 1)];
+                double lat = site.latDeg * DEG, lon = site.lonDeg * DEG;
+                Vec3d upF{std::cos(lat) * std::cos(lon), std::cos(lat) * std::sin(lon), std::sin(lat)};
+                Vec3d eastF = norm(cross(Vec3d{0, 0, 1}, upF)), northF = cross(upF, eastF);
+                Mat3d R = U.bodyRot(earth, W.t);
+                Vec3d padRel = R * (upF * rb.radius) - camRel;
+                if (len(padRel) < 30000) {
+                    // swing arms retract once the vehicle on the pad is ignited
+                    static double armT = 0;
+                    bool onPad = av.landed && len(av.landPos - upF * len(av.landPos)) < 200;
+                    double target = onPad && !av.ignited ? 0.0 : 1.0;
+                    double rate = GetFrameTime() * 0.45;
+                    if (!shadowPass) armT = target > armT ? std::min(target, armT + rate) : std::max(target, armT - rate * 3);
+                    gfx::PadSpec ps;
+                    ps.deckH = PAD_DECK_H;
+                    ps.rocketLen = W.padRocketLen;
+                    ps.rocketR = W.padRocketR;
+                    ps.armRetract = armT;
+                    Vec3d padLight{1, 0, 0};
+                    bool padShadow = false;
+                    W.solarFluxAt(ref, padRel + camRel, &padShadow, &padLight);
+                    // night at the pad (sun below the local horizon, with twilight): flood lights on; they also
+                    // light the vessels drawn after the pad in this pass
+                    double sunEl = dot(norm(padRel + camRel), W.sunDirFrom(ref, padRel + camRel));
+                    ps.night = 1.0f - smooth(-0.10f, 0.06f, (float)sunEl);
+                    Mat3d padRot = R * Mat3d::fromCols(eastF, northF, upF);
+                    if (ps.night > 0.01f && !shadowPass) {
+                        Vec3d lp[4], ld[4];
+                        int n = gfx::padFloodlights(ps, lp, ld);
+                        for (int q = 0; q < n; q++) {
+                            lp[q] = padRel + padRot * lp[q];
+                            ld[q] = padRot * ld[q];
+                        }
+                        float I = 2.4f * ps.night;
+                        gfx::setSpotLights(n, lp, ld, Vector3{1.0f * I, 0.92f * I, 0.78f * I}, 95.0f);
+                    }
+                    float amb = (padShadow ? 0.05f : 0.14f) + 0.25f * skyAmt * day;
+                    if (nightVision == 2) amb = std::max(amb, 0.7f);
+                    gfx::drawLaunchPad(ps, padRot, padRel, padLight, padShadow ? 0.04f : 1.0f, {0, 0, 0}, amb);
+                    padDrawn = true;
+                    padC = padRel;
+                    padE = padRot.col(0);
+                    padN = padRot.col(1);
+                    padU = padRot.col(2);
+                    padS = gfx::padHardstandSize(ps);
+                }
+            }
+        }
+        double padDeck = PAD_DECK_H; // (the deck height of the pad drawn: an Earth site or a base's launch mount)
+        // surface bases on this body near the camera: their buildings, and the launch pad rockets start from
+        for (const SurfaceBase& sb : W.bases) {
+            if (sb.body != ref || rb.isStar) continue;
+            Vec3d eB, nB, uB;
+            baseFrame(sb, eB, nB, uB);
+            double g0 = terrain::height(ref, uB);
+            Mat3d Rb = U.bodyRot(ref, W.t);
+            Vec3d C = uB * (rb.radius + g0);
+            Vec3d cRel = Rb * C - camRel;
+            if (len(cRel) > 40000) continue;
+            gfx::BaseDrawSpec spec;
+            for (const BaseModule& m : sb.modules) {
+                Vec3d d = baseDir(sb, rb.radius, m.x, m.y);
+                Vec3d P = d * (rb.radius + terrain::height(ref, d)) - C;
+                spec.mods.push_back({m.kind, m.variant, {dot(P, eB), dot(P, nB), dot(P, uB) - 0.25}, m.heading});
+            }
+            {
+                // the local regolith: the body's colour, toned down toward a dusty grey (shells, berms, roads)
+                auto ch = [](float c) { return (unsigned char)std::clamp((c * 0.55f + 0.42f * 0.45f) * 0.78f * 255.f, 25.f, 220.f); };
+                spec.soil = Color{ch(rb.colA.x), ch(rb.colA.y), ch(rb.colA.z), 255};
+            }
+            Vec3d bLight{1, 0, 0};
+            bool bShadow = false;
+            W.solarFluxAt(ref, cRel + camRel, &bShadow, &bLight);
+            double sunEl = dot(norm(cRel + camRel), W.sunDirFrom(ref, cRel + camRel));
+            spec.night = 1.0f - smooth(-0.10f, 0.06f, (float)sunEl);
+            double px = 0, py = 0;
+            bool hasPad = padOffset(sb, px, py);
+            Vec3d padDirF = hasPad ? baseDir(sb, rb.radius, px, py) : uB;
+            bool onPad = hasPad && av.landed && av.ref == ref && len(av.landPos - padDirF * len(av.landPos)) < 200;
+            spec.rocketOnPad = onPad && !av.ignited;
+            spec.rocketLen = W.padRocketLen;
+            spec.rocketR = W.padRocketR;
+            Mat3d bRot = Rb * Mat3d::fromCols(eB, nB, uB);
+            float amb = (bShadow ? 0.05f : 0.14f) + 0.25f * skyAmt * day;
+            if (nightVision == 2) amb = std::max(amb, 0.7f);
+            gfx::drawBase(spec, bRot, cRel, bLight, bShadow ? 0.04f : 1.0f, {0, 0, 0}, amb);
+            if (hasPad && !padDrawn) {
+                // vessel shadows on the launch mount of the base
+                Vec3d Pp = padDirF * (rb.radius + terrain::height(ref, padDirF));
+                padDrawn = true;
+                padC = Rb * Pp - camRel;
+                Vec3d eP = norm(cross(Vec3d{0, 0, 1}, padDirF) + Vec3d{1e-9, 0, 0}), nP = cross(padDirF, eP);
+                padE = Rb * eP;
+                padN = Rb * nP;
+                padU = Rb * padDirF;
+                padS = 2 * (std::max(0.5, W.padRocketR) * 1.25 + 1.6);
+                padDeck = BASE_PAD_DECK_H;
+            }
+        }
+        bool shadow = false;
+        Vec3d lightDir{1, 0, 0};
+        W.solarFluxAt(ref, av.r, &shadow, &lightDir);
+        // vessel shadows on the ground: the strongest cue for the height above it
+        if (!shadowPass && !rb.isStar && !rb.gasGiant && !shadow) {
+            for (auto& v : W.vessels) {
+                if (v.destroyed || v.ref != ref || (v.hidden && &v != &av)) continue;
+                Vec3d rel = v.r - camRel;
+                if (len(rel) > 20000) continue;
+                if (shMapR > 0 && len(rel - shMapC) < shMapR * 0.8) continue; // (its shadow is in the shadow map)
+                Vec3d u = norm(v.r);
+                double sunUp = dot(lightDir, u);
+                if (sunUp < 0.03) continue; // the sun is at or below the horizon
+                // ground plane: the body's surface, or the pad deck / apron
+                Vec3d g0 = u * rb.radius - camRel;
+                double hAbove = len(v.r) - rb.radius;
+                if (padDrawn) {
+                    Vec3d q = rel - padC;
+                    double x = dot(q, padE), y = dot(q, padN);
+                    double gh = (std::fabs(x) < padS / 2 && std::fabs(y) < padS / 2) ? padDeck : (std::hypot(x, y) < padS * 0.8 ? 0.4 : 0.0);
+                    if (std::hypot(x, y) < padS * 1.5) {
+                        g0 = padC + padU * gh;
+                        u = padU;
+                        sunUp = dot(lightDir, u);
+                        hAbove = dot(rel - g0, u);
+                    }
+                }
+                double Lv = std::max(1.0, v.length);
+                if (hAbove > Lv * 2 + 1500 || hAbove < -Lv) continue;
+                // the axis of the vessel from its lowest contact point to its top, projected along the sunlight
+                Vec3d az = v.q.rotate({0, 0, 1});
+                double zmin = -Lv * 0.5;
+                if (!v.contacts.empty()) {
+                    zmin = 1e9;
+                    for (const Vec3d& c : v.contacts) zmin = std::min(zmin, c.z - v.mp.com.z);
+                }
+                auto onGround = [&](const Vec3d& p) { return p - lightDir * (dot(p - g0, u) / sunUp); };
+                Vec3d a = onGround(rel + az * zmin), b = onGround(rel + az * (zmin + Lv));
+                double blur = std::max(0.0, hAbove) * 0.0047; // penumbra of the solar disc
+                float alpha = 0.55f * (1.0f - smooth((float)(Lv * 2 + 60), (float)(Lv * 2 + 1500), (float)hAbove)) *
+                              smooth(0.03f, 0.18f, (float)sunUp) * std::min(1.0f, day + 0.3f);
+                gfx::drawGroundShadow(a, b, u, std::max(0.4, v.maxR) * 1.05 + blur, std::max(0.3, v.maxR * 0.4) + blur, alpha);
+            }
+        }
+        for (auto& v : W.vessels) {
+            if (v.destroyed || v.ref != ref || (v.hidden && &v != &av)) continue;
+            Vec3d rel = v.r - camRel;
+            if (len(rel) > 60000) continue;
+            gfx::CraftVisual cv;
+            // deployed geometry plus the folded one: panels are drawn in between while they move
+            cv.comps = &v.comps; // (v.shown is for the airflow: folded panels / gear are animated by the renderer)
+            if (!v.stowedGeom.empty()) {
+                cv.stowed = &v.stowedGeom;
+                cv.solarT = v.solarT < 0 ? (v.solarDeployed ? 1.f : 0.f) : v.solarT;
+            }
+            cv.legsT = v.legsT < 0 ? (v.legsDeployed ? 1.f : 0.f) : v.legsT;
+            cv.sailT = v.sailT < 0 ? (v.sailDeployed ? 1.f : 0.f) : v.sailT;
+            std::vector<gfx::RcsPuff> puffs;
+            for (size_t j = 0; j < v.rcsNoz.size() && j < v.rcsFire.size(); j++)
+                if (v.rcsFire[j] > 0.03f)
+                    puffs.push_back({v.rcsNoz[j].pos, -v.rcsNoz[j].dir, v.rcsFire[j],
+                                     (float)std::sqrt(v.rcsNoz[j].F * (v.rcsElectric ? RCS_ELEC_THRUST : 1.0) / 22.0), v.rcsElectric});
+            cv.puffs = &puffs;
+            cv.engine = &v.engLevel;
+            cv.jetMode = &v.jetMode;
+            // entry plasma: visible from ~50 kW/m² of stagnation heating, fully developed at ~2 MW/m²
+            if (v.tHeatFlux > 5e4 && !v.landed) {
+                cv.plasma = (float)std::clamp(std::log10(v.tHeatFlux / 5e4) / std::log10(40.0), 0.0, 1.0);
+                Vec3d va = W.surfaceVel(v);
+                if (len(va) > 1) cv.motionDir = v.q.conj().rotate(norm(va));
+            }
+            cv.prop = &v.prop;
+            cv.heat = &v.heat;
+            cv.activeStage = v.stage;
+            cv.throttle = v.throttle;
+            cv.ignited = v.ignited;
+            cv.chute = v.chuteDeployed && !v.chuteCut && (!v.landed || v.chuteJettV > 0); // (a drag chute trails on the runway)
+            cv.chuteOpen = (float)v.chuteOpen;
+            cv.chuteReef = v.chuteT < v.chuteReefT ? (float)std::sqrt(v.chuteReefK) : 1.0f;
+            cv.flapPos = (float)v.flapPos;
+            cv.bayT = (float)v.bayT;
+            if (cv.chute) {
+                Vec3d va = W.surfaceVel(v);
+                cv.chuteDir = len(va) > 0.5 ? v.q.conj().rotate(-norm(va)) : v.q.conj().rotate(norm(v.r));
+            }
+            cv.sail = v.sailDeployed;
+            cv.legs = v.legsDeployed;
+            cv.pressureAtm = U.pressure(ref, len(v.r) - rb.radius) / P_ATM;
+            cv.infinite = W.settings.infiniteFuel;
+            cv.hyperGlow = W.hyper.active && &v == &av;
+            float amb = (shadow ? 0.05f : 0.14f) + 0.25f * skyAmt * day; // in the planet's shadow only faint sky / planet light
+            if (nightVision == 2) amb = std::max(amb, 0.7f);
+            Quatd vq = cv.hyperGlow ? hyperAttitude(W, v) : v.q;
+            gfx::drawCraft(cv, vq.toMat(), rel, v.mp.com, lightDir, shadow ? 0.04f : 1.0f, {0, 0, 0}, amb);
+        }
+    };
+    // realistic shadows: everything near the active vessel seen from the sun into a depth map; the ground and the
+    // vessels drawn after it take their shadows from it (the blob shadows stay for what lies outside the map)
+    if (gfx::shadowsActive() && !rb.isStar && !W.hyper.active) {
+        bool inShade = false;
+        Vec3d toSun{1, 0, 0};
+        W.solarFluxAt(ref, av.r, &inShade, &toSun);
+        double sunUp = dot(toSun, norm(av.r));
+        if (!inShade && sunUp > 0.02) {
+            shMapC = av.r - camRel;
+            shMapR = std::clamp(fcam.dist * 0.9 + av.length * 0.75 + 15.0, 25.0, 900.0);
+            // toward the sun: the casters above the region; away from it: down to the ground the shadows fall on
+            double hAbove = std::max(0.0, len(av.r) - rb.radius) + 200.0;
+            double back = shMapR * 2 + 300, ahead = std::min(shMapR * 2 + hAbove / std::max(sunUp, 0.05), 60000.0);
+            int star = U.hostStar(ref);
+            double sunAng = star >= 0 && star != ref ? 2 * U.bodies[star].radius / std::max(len(U.relPos(S, star, ref) - av.r), 1.0) : 0.0093;
+            if (gfx::beginShadowPass(shMapC, toSun, shMapR, back, ahead)) {
+                drawScene(true);
+                gfx::endShadowPass(nightVision ? nvTarget.id : 0, nightVision ? nvTarget.texture.width : GetRenderWidth(),
+                                   nightVision ? nvTarget.texture.height : GetRenderHeight(), sunAng);
+            } else shMapR = 0;
+        }
+    }
     gputime::mark("sky");
     for (const Item& it : items) {
         const Body& b = U.bodies[it.i];
@@ -634,7 +864,9 @@ void renderFlight(App& app, Vessel& av) {
             double nearP = std::max(0.5, camAboveGround * 0.3);
             gfx::begin3D(cam, nearP, farP);
             gputime::mark("bodies");
+            gfx::shadowReceive(shMapR > 0); // (the shadows of the vessels and the pad on the ground)
             gfx::drawBodyCap(U, it.i, camRel, rot, sunDir, fogC, fogK, 1.0f);
+            gfx::shadowReceive(false);
             gputime::mark("cap");
             if (b.atmTop > 0 && camAlt > b.atmTop * 0.6)
                 gfx::drawBodySphere(U, it.i, it.rel, b.radius, rot, sunDir, 1.0f, true, 8, false);
@@ -694,207 +926,9 @@ void renderFlight(App& app, Vessel& av) {
         // the sunlight on the vessels, coloured by its way through the air (physically based mode)
         if (gfx::physicalShading()) gfx::setSunTint(gfx::sunTintAt(U, ref, camRel, sunCam));
     }
-    // ground under the vessels: the pad deck / apron near the launch complex, the body's surface elsewhere
-    bool padDrawn = false;
-    Vec3d padC, padE, padN, padU;
-    double padS = 0;
-    {
-        // launch complex at the selected site (body-fixed)
-        int earth = U.find("Earth");
-        if (ref == earth) {
-            const LaunchSite& site = LAUNCH_SITES[std::clamp(W.settings.launchSite, 0, LAUNCH_SITE_COUNT - 1)];
-            double lat = site.latDeg * DEG, lon = site.lonDeg * DEG;
-            Vec3d upF{std::cos(lat) * std::cos(lon), std::cos(lat) * std::sin(lon), std::sin(lat)};
-            Vec3d eastF = norm(cross(Vec3d{0, 0, 1}, upF)), northF = cross(upF, eastF);
-            Mat3d R = U.bodyRot(earth, W.t);
-            Vec3d padRel = R * (upF * rb.radius) - camRel;
-            if (len(padRel) < 30000) {
-                // swing arms retract once the vehicle on the pad is ignited
-                static double armT = 0;
-                bool onPad = av.landed && len(av.landPos - upF * len(av.landPos)) < 200;
-                double target = onPad && !av.ignited ? 0.0 : 1.0;
-                double rate = GetFrameTime() * 0.45;
-                armT = target > armT ? std::min(target, armT + rate) : std::max(target, armT - rate * 3);
-                gfx::PadSpec ps;
-                ps.deckH = PAD_DECK_H;
-                ps.rocketLen = W.padRocketLen;
-                ps.rocketR = W.padRocketR;
-                ps.armRetract = armT;
-                Vec3d padLight{1, 0, 0};
-                bool padShadow = false;
-                W.solarFluxAt(ref, padRel + camRel, &padShadow, &padLight);
-                // night at the pad (sun below the local horizon, with twilight): flood lights on; they also
-                // light the vessels drawn after the pad in this pass
-                double sunEl = dot(norm(padRel + camRel), W.sunDirFrom(ref, padRel + camRel));
-                ps.night = 1.0f - smooth(-0.10f, 0.06f, (float)sunEl);
-                Mat3d padRot = R * Mat3d::fromCols(eastF, northF, upF);
-                if (ps.night > 0.01f) {
-                    Vec3d lp[4], ld[4];
-                    int n = gfx::padFloodlights(ps, lp, ld);
-                    for (int q = 0; q < n; q++) {
-                        lp[q] = padRel + padRot * lp[q];
-                        ld[q] = padRot * ld[q];
-                    }
-                    float I = 2.4f * ps.night;
-                    gfx::setSpotLights(n, lp, ld, Vector3{1.0f * I, 0.92f * I, 0.78f * I}, 95.0f);
-                }
-                float amb = (padShadow ? 0.05f : 0.14f) + 0.25f * skyAmt * day;
-                if (nightVision == 2) amb = std::max(amb, 0.7f);
-                gfx::drawLaunchPad(ps, padRot, padRel, padLight, padShadow ? 0.04f : 1.0f, {0, 0, 0}, amb);
-                padDrawn = true;
-                padC = padRel;
-                padE = padRot.col(0);
-                padN = padRot.col(1);
-                padU = padRot.col(2);
-                padS = gfx::padHardstandSize(ps);
-            }
-        }
-    }
-    double padDeck = PAD_DECK_H; // (the deck height of the pad drawn: an Earth site or a base's launch mount)
-    // surface bases on this body near the camera: their buildings, and the launch pad rockets start from
-    for (const SurfaceBase& sb : W.bases) {
-        if (sb.body != ref || rb.isStar) continue;
-        Vec3d eB, nB, uB;
-        baseFrame(sb, eB, nB, uB);
-        double g0 = terrain::height(ref, uB);
-        Mat3d Rb = U.bodyRot(ref, W.t);
-        Vec3d C = uB * (rb.radius + g0);
-        Vec3d cRel = Rb * C - camRel;
-        if (len(cRel) > 40000) continue;
-        gfx::BaseDrawSpec spec;
-        for (const BaseModule& m : sb.modules) {
-            Vec3d d = baseDir(sb, rb.radius, m.x, m.y);
-            Vec3d P = d * (rb.radius + terrain::height(ref, d)) - C;
-            spec.mods.push_back({m.kind, m.variant, {dot(P, eB), dot(P, nB), dot(P, uB) - 0.25}, m.heading});
-        }
-        {
-            // the local regolith: the body's colour, toned down toward a dusty grey (shells, berms, roads)
-            auto ch = [](float c) { return (unsigned char)std::clamp((c * 0.55f + 0.42f * 0.45f) * 0.78f * 255.f, 25.f, 220.f); };
-            spec.soil = Color{ch(rb.colA.x), ch(rb.colA.y), ch(rb.colA.z), 255};
-        }
-        Vec3d bLight{1, 0, 0};
-        bool bShadow = false;
-        W.solarFluxAt(ref, cRel + camRel, &bShadow, &bLight);
-        double sunEl = dot(norm(cRel + camRel), W.sunDirFrom(ref, cRel + camRel));
-        spec.night = 1.0f - smooth(-0.10f, 0.06f, (float)sunEl);
-        double px = 0, py = 0;
-        bool hasPad = padOffset(sb, px, py);
-        Vec3d padDirF = hasPad ? baseDir(sb, rb.radius, px, py) : uB;
-        bool onPad = hasPad && av.landed && av.ref == ref && len(av.landPos - padDirF * len(av.landPos)) < 200;
-        spec.rocketOnPad = onPad && !av.ignited;
-        spec.rocketLen = W.padRocketLen;
-        spec.rocketR = W.padRocketR;
-        Mat3d bRot = Rb * Mat3d::fromCols(eB, nB, uB);
-        float amb = (bShadow ? 0.05f : 0.14f) + 0.25f * skyAmt * day;
-        if (nightVision == 2) amb = std::max(amb, 0.7f);
-        gfx::drawBase(spec, bRot, cRel, bLight, bShadow ? 0.04f : 1.0f, {0, 0, 0}, amb);
-        if (hasPad && !padDrawn) {
-            // vessel shadows on the launch mount of the base
-            Vec3d Pp = padDirF * (rb.radius + terrain::height(ref, padDirF));
-            padDrawn = true;
-            padC = Rb * Pp - camRel;
-            Vec3d eP = norm(cross(Vec3d{0, 0, 1}, padDirF) + Vec3d{1e-9, 0, 0}), nP = cross(padDirF, eP);
-            padE = Rb * eP;
-            padN = Rb * nP;
-            padU = Rb * padDirF;
-            padS = 2 * (std::max(0.5, W.padRocketR) * 1.25 + 1.6);
-            padDeck = BASE_PAD_DECK_H;
-        }
-    }
-    bool shadow = false;
-    Vec3d lightDir{1, 0, 0};
-    W.solarFluxAt(ref, av.r, &shadow, &lightDir);
-    // vessel shadows on the ground: the strongest cue for the height above it
-    if (!rb.isStar && !rb.gasGiant && !shadow) {
-        for (auto& v : W.vessels) {
-            if (v.destroyed || v.ref != ref || (v.hidden && &v != &av)) continue;
-            Vec3d rel = v.r - camRel;
-            if (len(rel) > 20000) continue;
-            Vec3d u = norm(v.r);
-            double sunUp = dot(lightDir, u);
-            if (sunUp < 0.03) continue; // the sun is at or below the horizon
-            // ground plane: the body's surface, or the pad deck / apron
-            Vec3d g0 = u * rb.radius - camRel;
-            double hAbove = len(v.r) - rb.radius;
-            if (padDrawn) {
-                Vec3d q = rel - padC;
-                double x = dot(q, padE), y = dot(q, padN);
-                double gh = (std::fabs(x) < padS / 2 && std::fabs(y) < padS / 2) ? padDeck : (std::hypot(x, y) < padS * 0.8 ? 0.4 : 0.0);
-                if (std::hypot(x, y) < padS * 1.5) {
-                    g0 = padC + padU * gh;
-                    u = padU;
-                    sunUp = dot(lightDir, u);
-                    hAbove = dot(rel - g0, u);
-                }
-            }
-            double Lv = std::max(1.0, v.length);
-            if (hAbove > Lv * 2 + 1500 || hAbove < -Lv) continue;
-            // the axis of the vessel from its lowest contact point to its top, projected along the sunlight
-            Vec3d az = v.q.rotate({0, 0, 1});
-            double zmin = -Lv * 0.5;
-            if (!v.contacts.empty()) {
-                zmin = 1e9;
-                for (const Vec3d& c : v.contacts) zmin = std::min(zmin, c.z - v.mp.com.z);
-            }
-            auto onGround = [&](const Vec3d& p) { return p - lightDir * (dot(p - g0, u) / sunUp); };
-            Vec3d a = onGround(rel + az * zmin), b = onGround(rel + az * (zmin + Lv));
-            double blur = std::max(0.0, hAbove) * 0.0047; // penumbra of the solar disc
-            float alpha = 0.55f * (1.0f - smooth((float)(Lv * 2 + 60), (float)(Lv * 2 + 1500), (float)hAbove)) *
-                          smooth(0.03f, 0.18f, (float)sunUp) * std::min(1.0f, day + 0.3f);
-            gfx::drawGroundShadow(a, b, u, std::max(0.4, v.maxR) * 1.05 + blur, std::max(0.3, v.maxR * 0.4) + blur, alpha);
-        }
-    }
-    for (auto& v : W.vessels) {
-        if (v.destroyed || v.ref != ref || (v.hidden && &v != &av)) continue;
-        Vec3d rel = v.r - camRel;
-        if (len(rel) > 60000) continue;
-        gfx::CraftVisual cv;
-        // deployed geometry plus the folded one: panels are drawn in between while they move
-        cv.comps = &v.comps; // (v.shown is for the airflow: folded panels / gear are animated by the renderer)
-        if (!v.stowedGeom.empty()) {
-            cv.stowed = &v.stowedGeom;
-            cv.solarT = v.solarT < 0 ? (v.solarDeployed ? 1.f : 0.f) : v.solarT;
-        }
-        cv.legsT = v.legsT < 0 ? (v.legsDeployed ? 1.f : 0.f) : v.legsT;
-        cv.sailT = v.sailT < 0 ? (v.sailDeployed ? 1.f : 0.f) : v.sailT;
-        std::vector<gfx::RcsPuff> puffs;
-        for (size_t j = 0; j < v.rcsNoz.size() && j < v.rcsFire.size(); j++)
-            if (v.rcsFire[j] > 0.03f)
-                puffs.push_back({v.rcsNoz[j].pos, -v.rcsNoz[j].dir, v.rcsFire[j],
-                                 (float)std::sqrt(v.rcsNoz[j].F * (v.rcsElectric ? RCS_ELEC_THRUST : 1.0) / 22.0), v.rcsElectric});
-        cv.puffs = &puffs;
-        cv.engine = &v.engLevel;
-        cv.jetMode = &v.jetMode;
-        // entry plasma: visible from ~50 kW/m² of stagnation heating, fully developed at ~2 MW/m²
-        if (v.tHeatFlux > 5e4 && !v.landed) {
-            cv.plasma = (float)std::clamp(std::log10(v.tHeatFlux / 5e4) / std::log10(40.0), 0.0, 1.0);
-            Vec3d va = W.surfaceVel(v);
-            if (len(va) > 1) cv.motionDir = v.q.conj().rotate(norm(va));
-        }
-        cv.prop = &v.prop;
-        cv.heat = &v.heat;
-        cv.activeStage = v.stage;
-        cv.throttle = v.throttle;
-        cv.ignited = v.ignited;
-        cv.chute = v.chuteDeployed && !v.chuteCut && (!v.landed || v.chuteJettV > 0); // (a drag chute trails on the runway)
-        cv.chuteOpen = (float)v.chuteOpen;
-        cv.chuteReef = v.chuteT < v.chuteReefT ? (float)std::sqrt(v.chuteReefK) : 1.0f;
-        cv.flapPos = (float)v.flapPos;
-        cv.bayT = (float)v.bayT;
-        if (cv.chute) {
-            Vec3d va = W.surfaceVel(v);
-            cv.chuteDir = len(va) > 0.5 ? v.q.conj().rotate(-norm(va)) : v.q.conj().rotate(norm(v.r));
-        }
-        cv.sail = v.sailDeployed;
-        cv.legs = v.legsDeployed;
-        cv.pressureAtm = U.pressure(ref, len(v.r) - rb.radius) / P_ATM;
-        cv.infinite = W.settings.infiniteFuel;
-        cv.hyperGlow = W.hyper.active && &v == &av;
-        float amb = (shadow ? 0.05f : 0.14f) + 0.25f * skyAmt * day; // in the planet's shadow only faint sky / planet light
-        if (nightVision == 2) amb = std::max(amb, 0.7f);
-        Quatd vq = cv.hyperGlow ? hyperAttitude(W, v) : v.q;
-        gfx::drawCraft(cv, vq.toMat(), rel, v.mp.com, lightDir, shadow ? 0.04f : 1.0f, {0, 0, 0}, amb);
-    }
+    gfx::shadowReceive(shMapR > 0);
+    drawScene(false);
+    gfx::shadowReceive(false);
     gfx::end3D();
     gputime::mark("vessels");
     // the map's picture: the view as it is now, before labels and the HUD (not the night-vision image)
@@ -1925,7 +1959,7 @@ void navPanel(App& app, Vessel& av) {
     float w = r.width - 32;
     float hintH = 0;
     std::string hint;
-    if (g.mode == Mode::Message) hint = g.message;
+    if (g.mode == Mode::Message || g.mode == Mode::Launch) hint = g.message;
     else if (g.mode == Mode::Transfer) hint = tr("Turn along the orange burn marker (SAS Burn) and burn until the remaining velocity change is zero.");
     else if (g.mode == Mode::Coast) hint = tr("Coast to the intercept. Close by, the panel switches to the docking approach.");
     else hint = tr("Translate with RCS by the amounts shown; keep the closing speed low near the port.");
@@ -1934,7 +1968,8 @@ void navPanel(App& app, Vessel& av) {
     }
     // a burn is asked for but the engines are not lit (a start in orbit, after staging): say how to light them
     bool needIgnite = !av.ignited && (g.mode == Mode::Transfer || (g.mode == Mode::Proximity && len(g.dvCraft) > 3));
-    float bodyH = g.mode == Mode::Message ? 0 : g.mode == Mode::Transfer ? 6 * 21 + 26 + 44 : g.mode == Mode::Coast ? 4 * 21 + 26 + 44 : 0;
+    float bodyH = g.mode == Mode::Message ? 0 : g.mode == Mode::Transfer ? 6 * 21 + 26 + 44 : g.mode == Mode::Coast ? 4 * 21 + 26 + 44
+                : g.mode == Mode::Launch ? 3 * 21 + 26 + 44 + 38 : 0;
     // proximity: the RCS lines
     struct Ax { double v; keys::A plus, minus; const char* pn; const char* mn; };
     Ax axes[3] = {{g.dvCraft.z, keys::A::TransFwd, keys::A::TransBack, "Forward", "Back"},
@@ -1963,7 +1998,23 @@ void navPanel(App& app, Vessel& av) {
         if (button(b, label, av.sas == m, true)) av.sas = av.sas == m ? SAS::Stability : m;
     };
     Color burnC{251, 146, 60, 255};
-    if (g.mode == Mode::Transfer) {
+    if (g.mode == Mode::Launch) {
+        // on the pad: when the site passes under the target's orbital plane, and the heading along it
+        double dt = g.tLaunch - W.t;
+        if (dt > 30) text(fit(trf("Launch window in {0}", formatTime(dt)), w, 15, true), r.x + 16, y, 15, col::text, true);
+        else text(fit(tr("Launch window open: lift off now"), w, 15, true), r.x + 16, y, 15, col::good, true);
+        y += 26;
+        static const char* DIRS[] = {"north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"};
+        int oct = (int)std::lround(g.launchAzDeg / 45.0) % 8;
+        kv("Heading at lift-off", fmt("%.1f°", g.launchAzDeg) + "  ·  " + tr(DIRS[oct]));
+        kv("Site from the orbital plane now", fmt("%.2f°", g.offNowDeg));
+        kv("... at the window", fmt("%.2f°", g.planeOffDeg), g.planeOffDeg < 0.5 ? col::good : col::warn);
+        // (one above the other: the labels are long in some languages)
+        sasBtn({r.x + 16, y + 4, r.width - 32, 32}, SAS::Ascent, "SAS Ascent");
+        y += 38;
+        if (button({r.x + 16, y + 4, r.width - 32, 32}, "Warp to window", false, dt > 90 && W.warpTo < 0, Icon::Forward)) W.startWarpTo(g.tLaunch - 30);
+        y += 44;
+    } else if (g.mode == Mode::Transfer) {
         double dt = g.tBurn - W.t;
         if (dt > 1) text(trf("Rendezvous burn in {0}", formatTime(dt)), r.x + 16, y, 15, col::text, true);
         else text(trf("Burn now  ·  {0} left", fmt("%.1f m/s", g.dvTotal)), r.x + 16, y, 15, burnC, true);
@@ -3582,13 +3633,15 @@ void flightFrame(App& app) {
     if (!av) { app.screen = Screen::Factory; return; }
 
     // ---------------- draw
-    gfx::setNightLift(!mapMode && nightVision == 2 ? 0.45f : 0.f);
-    if (mapMode) renderMap(app, av);
-    else if (nightVision) {
+    // night vision in the flight view and on the map alike (the map's night sides lifted in the bright mode)
+    gfx::setNightLift(nightVision == 2 ? 0.45f : 0.f);
+    if (nightVision) {
         nvBegin();
-        renderFlight(app, *av);
+        if (mapMode) renderMap(app, av);
+        else renderFlight(app, *av);
         nvEnd();
-    } else renderFlight(app, *av);
+    } else if (mapMode) renderMap(app, av);
+    else renderFlight(app, *av);
     {
         Vector2 vp{ui::SW() / 2, ui::SH() / 2};
         if (W.hyper.active && !mapMode) {

@@ -16,6 +16,18 @@ void setDetailRange(float k);
 // physically based shading (off: the standard look). Returns false when its shaders are not available
 bool setPhysicalShading(bool on);
 bool physicalShading();
+// realistic shadows (physically based mode): shadow maps from the sun with soft penumbrae as wide as the sun's
+// disc makes them (contact-hardening, PCSS). quality 0: 2048 px, 1: 4096 px. Returns false when not available
+bool setShadows(bool on, int quality);
+bool shadowsActive(); // on, the physically based mode on and the shadow map available
+// the shadow pass: the casters (pad, bases, vessels) drawn between begin and end into a map seen from the sun.
+// center: the middle of the region (camera-relative), toSun: unit vector, radius: half its width [m], back / ahead:
+// how far it reaches toward the sun and away from it [m]. prevFbo / w / h: the target drawn to before (0: the screen)
+bool beginShadowPass(const Vec3d& center, const Vec3d& toSun, double radius, double back, double ahead);
+void endShadowPass(unsigned prevFbo, int w, int h, double sunAngDiam);
+// the planet ground and the vessel surfaces drawn from now on receive the shadows of the last pass (off: none)
+void shadowReceive(bool on);
+bool shadowPassActive();
 // physically based mode: the sky (Rayleigh / Mie scattering) as the background of the flight view, and the
 // colour of the sunlight that reaches a point through the air (white in space, red at a sunset)
 void drawPhysicalSky(const Universe& U, int body, const Vec3d& camRel, const Vec3d& fwd, const Vec3d& up, float fovyDeg, const Vec3d& sunDir);

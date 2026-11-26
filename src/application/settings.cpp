@@ -40,6 +40,8 @@ void loadPrefs(App& app) {
         if (key == "terrainq" && v >= 0 && v < 4) app.terrainQuality = v;
         if (key == "detailrange" && v >= 50 && v <= 400) app.detailRange = v;
         if (key == "pbr") app.physicalShading = v != 0;
+        if (key == "shadows") app.realShadows = v != 0;
+        if (key == "shadowq") app.shadowQuality = std::clamp(v, 0, 1);
         if (key == "autosave" && (v == 0 || v == 1 || v == 3 || v == 5 || v == 10)) app.autosaveMin = v;
         if (key == "fpslimit" && v >= 0 && v < 4) app.fpsLimit = v;
         if (key == "showfps") app.showFps = v != 0;
@@ -66,7 +68,7 @@ void savePrefs(const App& app) {
     if (g_prefsReadOnly) return;
     std::ofstream f(app.dataDir + "\\prefs.txt");
     f << "version 2\nlang " << app.lang << "\ntextsize " << app.textSize << "\nreversezoom " << (app.reverseZoom ? 1 : 0) << "\nsfxpct "
-      << std::clamp(app.volumePct, 0, 100) << "\nmusic " << (app.music ? 1 : 0) << "\nmusicpct " << std::clamp(app.musicPct, 0, 100) << "\nterrainq " << app.terrainQuality << "\ndetailrange " << std::clamp(app.detailRange, 50, 400) << "\npbr " << (app.physicalShading ? 1 : 0) << "\nautosave " << app.autosaveMin << "\nfpslimit " << app.fpsLimit << "\nshowfps " << (app.showFps ? 1 : 0) << "\nadaptive " << (app.adaptiveDetail ? 1 : 0) << "\nbelts " << (app.showBelts ? 1 : 0) << "\nfullscreen " << (app.fullscreen ? 1 : 0) << "\nuisize " << app.uiSize
+      << std::clamp(app.volumePct, 0, 100) << "\nmusic " << (app.music ? 1 : 0) << "\nmusicpct " << std::clamp(app.musicPct, 0, 100) << "\nterrainq " << app.terrainQuality << "\ndetailrange " << std::clamp(app.detailRange, 50, 400) << "\npbr " << (app.physicalShading ? 1 : 0) << "\nshadows " << (app.realShadows ? 1 : 0) << "\nshadowq " << app.shadowQuality << "\nautosave " << app.autosaveMin << "\nfpslimit " << app.fpsLimit << "\nshowfps " << (app.showFps ? 1 : 0) << "\nadaptive " << (app.adaptiveDetail ? 1 : 0) << "\nbelts " << (app.showBelts ? 1 : 0) << "\nfullscreen " << (app.fullscreen ? 1 : 0) << "\nuisize " << app.uiSize
       << "\ntutorials2 " << (app.tutorialsDone & 0xFFFFu) << "\n";
 }
 
