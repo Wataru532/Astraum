@@ -7683,3 +7683,20 @@ bool autotestStep(App& app) {
     }
     return true;
 }
+
+int autotestExitCode() {
+    if (!T.on || T.dir.empty()) return 0;
+    std::ifstream f(pathFromUtf8(T.dir + "\\autotest.log"));
+    if (!f) return 1;
+    std::string line;
+    while (std::getline(f, line)) {
+        size_t p = 0;
+        while ((p = line.find("FAIL", p)) != std::string::npos) {
+            bool leftOk = p == 0 || !std::isalnum((unsigned char)line[p - 1]);
+            bool rightOk = p + 4 >= line.size() || !std::isalnum((unsigned char)line[p + 4]);
+            if (leftOk && rightOk) return 1;
+            p += 4;
+        }
+    }
+    return 0;
+}

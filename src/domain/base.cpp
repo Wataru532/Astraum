@@ -158,9 +158,10 @@ void placeModule(SurfaceBase& b, BaseModule m) {
 bool completeLaunchComplex(SurfaceBase& b) {
     BaseStatus s = baseStatus(b);
     if (s.hasPad || !s.requirementsMet()) return false;
+    if ((int)b.modules.size() >= BASE_MAX_MODULES) return false;
     placeModule(b, {ModuleKind::LaunchPad});
     for (int i = 0; i < 4; i++) placeModule(b, {ModuleKind::Storage});
-    return true;
+    return baseStatus(b).hasPad;
 }
 
 bool padOffset(const SurfaceBase& b, double& x, double& y) {
@@ -291,9 +292,15 @@ BasePlan planBase(const World& W, int vi) {
             p.why = "Too many bases";
             return p;
         }
-    } else if ((int)(W.bases[p.joins].modules.size() + p.modules.size()) > BASE_MAX_MODULES) {
-        p.why = "The base is full";
-        return p;
+    } else {
+        SurfaceBase preview = W.bases[p.joins];
+        BaseStatus before = baseStatus(preview);
+        for (const BaseModule& m : p.modules) preview.modules.push_back(m);
+        int extra = (!before.hasPad && baseStatus(preview).requirementsMet()) ? 5 : 0;
+        if ((int)(W.bases[p.joins].modules.size() + p.modules.size()) + extra > BASE_MAX_MODULES) {
+            p.why = "The base is full";
+            return p;
+        }
     }
     std::sort(p.comps.begin(), p.comps.end());
     p.comps.erase(std::unique(p.comps.begin(), p.comps.end()), p.comps.end());
@@ -318,7 +325,8 @@ int buildBase(World& W, int vi, const std::string& name) {
             dirToLatLon(norm(up + e * (-40.0 / R) + n * (50.0 / R)), b.lat, b.lon);
         }
         b.founded = W.t;
-        b.name = name.empty() ? defaultBaseName(W, v.ref) : name.substr(0, 48);
+        std::string cleanName = cleanLineText(name, 48);
+        b.name = cleanName.empty() ? defaultBaseName(W, v.ref) : cleanName;
         placeModule(b, {ModuleKind::Comms});
         W.bases.push_back(b);
         idx = (int)W.bases.size() - 1;

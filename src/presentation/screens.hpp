@@ -10,6 +10,7 @@ void cadFrame(App& app);
 void cadTrimMemory(bool hard);
 void cadSetCraft(App& app, const Craft& c); // replace the CAD craft (old one kept on the undo stack)
 void flightOnEnter(App& app);
+void flightShutdown();
 bool flightPaused();          // pause menu open in the flight view
 void settingsModal(App& app);
 void keyBindingsModal(App& app);

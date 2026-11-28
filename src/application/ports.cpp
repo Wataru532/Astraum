@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 
 namespace ports {
 namespace {
@@ -19,6 +20,11 @@ double now() {
     return duration<double>(steady_clock::now() - t0).count();
 }
 int systemLanguage() { return g_platform.systemLanguage ? g_platform.systemLanguage() : 0; }
+std::string appDataDir() {
+    if (g_platform.appDataDir) return g_platform.appDataDir();
+    const char* ad = std::getenv("APPDATA");
+    return ad ? std::string(ad) : std::string();
+}
 void log(const char* fmt, ...) {
     if (!g_platform.log) return;
     char b[512];

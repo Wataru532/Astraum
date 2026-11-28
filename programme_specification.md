@@ -1,8 +1,8 @@
 # Astraum プログラム仕様書
 
-- 対象バージョン: 1.2.0（`src/shared/brand.hpp` の `APP_VERSION`）
+- 対象バージョン: 1.2.1（`src/shared/brand.hpp` の `APP_VERSION`）
 - 旧名称: StellarForge（名称変更前の開発版。ファイルとデータはそのまま引き継げます）
-- 作成日: 2026-11-19
+- 作成日: 2026-11-19（最終更新: 2026-11-28）
 - 対象: `src/` 以下のソースコード、`tools/` のスクリプト、ビルド設定、埋め込みリソース
 
 ---
@@ -95,7 +95,7 @@ src/
 |---|---|---|---|
 | `GroundPort` | `domain/ground.hpp` | `infrastructure/terrain.cpp` の `MapGround` | 天体の標高、地形の改訂番号、詳細タイルの追従、基地周囲の地面の平坦化 |
 | `diag` | `domain/diag.hpp` | `infrastructure/crash.cpp`（`crash::breadcrumb`） | クラッシュ解析用の操作履歴 |
-| `ports::Platform` | `application/ports.hpp` | `main.cpp`（raylib の `GetTime`、`TraceLog`）、`infrastructure/platform.cpp` | 時計、OS の表示言語、ログ |
+| `ports::Platform` | `application/ports.hpp` | `main.cpp`（raylib の `GetTime`、`TraceLog`、`winshell::appDataDir`）、`infrastructure/platform.cpp` | 時計、OS の表示言語、Unicode 対応の `%APPDATA%` 取得、ログ |
 | `ports::Presentation` | `application/ports.hpp` | `presentation/map_dialogs.cpp`、`presentation/tutorial.cpp` | マップのサムネイル、チュートリアルの状態 |
 
 実装が差し込まれていなくても、既定の動作で動きます（地面は滑らかな球、言語は英語、時計は `std::chrono`）。
@@ -153,14 +153,16 @@ cmake --build build
 
 - C++20、既定は Release ビルドです。
 - `third_party/raylib` を静的ライブラリとしてビルドします。
-- MinGW では静的リンクし、シンボルを除去します（`-s`）。リンクマップ `Astraum.map` は常に出力します。`-DSF_NOSTRIP=1` を付けると、シンボル付きの診断ビルドになります。
+- MinGW では Release ビルド時に静的リンクし、シンボルを除去します（`-s`）。リンクマップ `Astraum.map` は常に出力します。`-DSF_NOSTRIP=1` を付けると、C++ コンパイルに `-g` を付けたシンボル付き診断ビルドになります。
+- `-DASTRAUM_ENABLE_TESTS=OFF` を指定すると、`src/tests/` の自動テストおよび開発用 CLI フラグ（`--autotest`、`--sfxdump`、`--crashtest`）を本番実行ファイルから除外できます（既定は `ON`）。
 - 出力：`build/Astraum.exe`。
 
 ### 4.2 `src/app.rc`（埋め込みリソース）
 
 | ID | 内容 | 利用箇所 |
 |---|---|---|
-| 1 | アイコン | ウィンドウ、エクスプローラー |
+| 1 (`ICON`) | アイコン | ウィンドウ、エクスプローラー |
+| 1 (`RT_MANIFEST`) | `src/app.manifest`（`activeCodePage: UTF-8`） | Windows における UTF-8 パス・CRT 互換性 |
 | 201–206 | 地球・月・火星の色地図と高度地図 | `infrastructure/terrain.cpp` |
 | 211–216 | 同じ 3 天体の高解像度タイル（`.pak`） | `terrain.cpp` の詳細タイル |
 | 221 | `stars.bin`（BSC5 恒星カタログ） | `presentation/render.cpp` |
@@ -169,7 +171,7 @@ cmake --build build
 | 301–312 | 効果音 WAV 12 種 | `infrastructure/audio.cpp` |
 | 321–323 | BGM 3 曲 | `audio.cpp` |
 | 401 | `THIRD_PARTY_NOTICES.txt`（クレジットとライセンス文） | `presentation/menu.cpp` の `creditsModal` |
-| VERSIONINFO | 製品名 Astraum、バージョン 1.0.0 | エクスプローラーのプロパティ |
+| VERSIONINFO | 製品名 Astraum、バージョン 1.2.1 | エクスプローラーのプロパティ |
 
 リソースは `winshell::resource(id, data, size)` でメモリ上のポインターとして取り出します。
 

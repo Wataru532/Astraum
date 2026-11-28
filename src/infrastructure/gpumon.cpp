@@ -54,7 +54,18 @@ struct Thermal {
             double k = items[i].FmtValue.doubleValue * scale;
             if (k < 274.5 || k > 420) continue; // no sensor behind the zone (placeholders report 0 C)
             std::string name;
-            for (const wchar_t* p = items[i].szName; p && *p && name.size() < 40; p++) name += (*p < 128) ? (char)*p : '?';
+            if (items[i].szName && items[i].szName[0]) {
+                int need = WideCharToMultiByte(CP_UTF8, 0, items[i].szName, -1, nullptr, 0, nullptr, nullptr);
+                if (need > 1) {
+                    name.resize((size_t)need - 1);
+                    WideCharToMultiByte(CP_UTF8, 0, items[i].szName, -1, name.data(), need, nullptr, nullptr);
+                    if (name.size() > 60) {
+                        size_t cut = 60;
+                        while (cut > 0 && ((unsigned char)name[cut] & 0xC0) == 0x80) cut--;
+                        name.resize(cut);
+                    }
+                }
+            }
             out.push_back({name, (float)(k - 273.15)});
         }
         std::lock_guard<std::mutex> lk(g_tmx);
@@ -130,6 +141,12 @@ void stop() {
     g_cv.notify_all();
     if (g_thread.joinable()) g_thread.join();
 }
+
+namespace {
+struct StopGuard {
+    ~StopGuard() { stop(); }
+} g_stopGuard;
+} // namespace
 
 float utilization() { return g_util; }
 

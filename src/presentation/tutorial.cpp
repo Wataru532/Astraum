@@ -1050,7 +1050,7 @@ void menuModal(App& app) {
     dim();
     float SW = ui::SW(), SH = ui::SH();
     int n = count();
-    float H = 150 + n * 76.0f;
+    float H = std::min(150 + n * 76.0f, SH - 40.0f);
     Rectangle r{(SW - 640) / 2, (SH - H) / 2, 640, H};
     panel(r, Color{20, 24, 36, 252}, 14);
     icon(Icon::Book, {r.x + 22, r.y + 20, 26, 26}, col::accent);
@@ -1062,24 +1062,30 @@ void menuModal(App& app) {
     std::string note = app.gameStarted ? tr("Starting a tutorial replaces the current game. Quicksave (F5) first to keep it.")
                                        : tr("Guided missions that teach the controls step by step.");
     text(fit(note, r.width - 48, 13), r.x + 24, r.y + 58, 13, app.gameStarted ? col::warn : col::dim);
-    float y = r.y + 88;
+    Rectangle lr{r.x + 16, r.y + 88, r.width - 32, std::max(60.0f, r.height - 134.0f)};
+    float off = beginScroll(7401, lr, n * 76.0f);
+    float y = lr.y - off;
     for (int i = 0; i < n; i++) {
-        Rectangle row{r.x + 16, y, r.width - 32, 68};
-        DrawRectangleRounded(row, 0.15f, 6, Color{26, 32, 46, 255});
-        bool done = (app.tutorialsDone >> i) & 1u;
-        Rectangle badge{row.x + 12, row.y + 18, 32, 32};
-        DrawCircleV({badge.x + 16, badge.y + 16}, 16, done ? Color{30, 70, 48, 255} : Color{36, 44, 62, 255});
-        if (done) icon(Icon::Check, {badge.x + 7, badge.y + 7, 18, 18}, col::good);
-        else textC(std::to_string(i + 1), badge, 15, col::text, true);
-        text(fit(tr(title(i)), row.width - 220, 17, true), row.x + 58, row.y + 12, 17, col::text, true);
-        text(fit(tr(summary(i)), row.width - 220, 13), row.x + 58, row.y + 38, 13, col::dim);
-        if (primaryButton({row.x + row.width - 132, row.y + 16, 120, 36}, done ? "Replay" : "Start", Icon::Play)) {
-            menuOpen = false;
-            if (!start(app, i)) app.setStatus("Could not start the tutorial");
-            return;
+        Rectangle row{lr.x, y, lr.width - 10, 68};
+        if (row.y + row.height >= lr.y && row.y <= lr.y + lr.height) {
+            DrawRectangleRounded(row, 0.15f, 6, Color{26, 32, 46, 255});
+            bool done = (app.tutorialsDone >> i) & 1u;
+            Rectangle badge{row.x + 12, row.y + 18, 32, 32};
+            DrawCircleV({badge.x + 16, badge.y + 16}, 16, done ? Color{30, 70, 48, 255} : Color{36, 44, 62, 255});
+            if (done) icon(Icon::Check, {badge.x + 7, badge.y + 7, 18, 18}, col::good);
+            else textC(std::to_string(i + 1), badge, 15, col::text, true);
+            text(fit(tr(title(i)), row.width - 220, 17, true), row.x + 58, row.y + 12, 17, col::text, true);
+            text(fit(tr(summary(i)), row.width - 220, 13), row.x + 58, row.y + 38, 13, col::dim);
+            if (primaryButton({row.x + row.width - 132, row.y + 16, 120, 36}, done ? "Replay" : "Start", Icon::Play)) {
+                endScroll();
+                menuOpen = false;
+                if (!start(app, i)) app.setStatus("Could not start the tutorial");
+                return;
+            }
         }
         y += 76;
     }
-    text("Progress is saved. The tutorial guide appears in the flight view and can be hidden.", r.x + 24, r.y + r.height - 38, 12, col::faint);
+    endScroll();
+    text("Progress is saved. The tutorial guide appears in the flight view and can be hidden.", r.x + 24, r.y + r.height - 34, 12, col::faint);
 }
 } // namespace tut

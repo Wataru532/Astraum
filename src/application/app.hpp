@@ -30,7 +30,12 @@ struct App {
     double lastSaveReal = -1;   // GetTime() of the last save of the map
     double savedT = 0;          // the world as last saved / loaded (changes since -> unsaved)
     size_t savedN = 0;
-    int savedActive = -1, savedNextId = 0;
+    size_t savedBases = 0;
+    int savedActive = -1, savedNextId = 0, savedNextBaseId = 0;
+    int savedLaunchSite = 0, savedLaunchBase = 0;
+    bool savedInfFuel = false, savedHyperspace = false;
+    std::string savedMapName;
+    bool saveFailed = false;
     std::string designText;     // the last design as written to lastDesignFile
     double designCheck = 0;     // GetTime() of the last look at the design
     bool closeAsk = false;      // "quit with unsaved changes?" dialog open

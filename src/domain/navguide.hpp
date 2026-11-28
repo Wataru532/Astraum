@@ -63,4 +63,8 @@ bool lambert(const Vec3d& r1, const Vec3d& r2, double dt, double mu, const Vec3d
 // the nearest pair of free docking ports (component indices); false when either has none
 bool nearestPorts(const World& W, const Vessel& a, const Vessel& t, int& ia, int& it);
 
+// drop cached rendezvous plans (on world load, new game, rewind) and wait for any in-flight search
+void invalidate();
+void shutdown();
+
 } // namespace navg

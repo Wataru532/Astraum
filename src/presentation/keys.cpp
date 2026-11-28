@@ -4,6 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include "rl.hpp"
+#include "storage.hpp"
 #include "ui.hpp"
 
 namespace keys {
@@ -268,7 +269,9 @@ void resetDefaults() {
 
 bool load(const std::string& path) {
     resetDefaults();
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    std::filesystem::path fp = pathFromUtf8(path);
+    if (fp.empty()) return false;
+    std::ifstream f(fp, std::ios::binary | std::ios::ate);
     if (!f) return false;
     if (f.tellg() > 64 * 1024) return false; // not a bindings file: keep the defaults
     f.seekg(0);
@@ -299,20 +302,14 @@ bool load(const std::string& path) {
 
 bool save(const std::string& path) {
     ensure();
-    std::string tmp = path + ".tmp";
-    {
-        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        if (!f) return false;
-        f << "# Astraum key bindings: action  code mods  code mods  (mods: 1 Ctrl, 2 Shift, 4 Alt; code 1000+ = mouse button)\n";
-        for (int a = 0; a < N; a++) {
-            f << INFO[a].id;
-            for (int s = 0; s < SLOTS; s++) f << ' ' << g_bind[a][s].code << ' ' << (int)g_bind[a][s].mods;
-            f << '\n';
-        }
-        if (!f) return false;
+    std::ostringstream f;
+    f << "# Astraum key bindings: action  code mods  code mods  (mods: 1 Ctrl, 2 Shift, 4 Alt; code 1000+ = mouse button)\n";
+    for (int a = 0; a < N; a++) {
+        f << INFO[a].id;
+        for (int s = 0; s < SLOTS; s++) f << ' ' << g_bind[a][s].code << ' ' << (int)g_bind[a][s].mods;
+        f << '\n';
     }
-    std::remove(path.c_str());
-    return std::rename(tmp.c_str(), path.c_str()) == 0;
+    return writeFileAtomic(path, f.str());
 }
 
 A conflict(A self, const Binding& b) {

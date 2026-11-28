@@ -354,6 +354,7 @@ void loadModal(App& app) {
         if (rowItem(row, false)) {
             app.design = d;
             selected = -1;
+            multiSel.clear();
             loadOpen = false;
             app.setStatus(trf("Loaded template: {0}", d.name));
         }
@@ -371,18 +372,20 @@ void loadModal(App& app) {
     for (auto& sf : savedFiles) {
         const std::string& f = sf.path;
         Rectangle row{listR.x, y, colW - 46, 42};
-        std::string nm = sf.name.empty() ? std::filesystem::path(f).stem().string() : sf.name; // (the name as saved)
+        std::string nm = sf.name.empty() ? pathToUtf8(pathFromUtf8(f).stem()) : sf.name; // (the name as saved)
+        ensureGlyphs(nm);
         if (rowItem(row, false)) {
             Design d;
             if (loadDesign(d, f)) {
                 ensureGlyphs(d.name); // (a name in another script than the interface language)
                 app.design = d;
                 selected = -1;
+                multiSel.clear();
                 loadOpen = false;
                 app.setStatus(trf("Loaded {0}", d.name));
             } else app.setStatus(trf("Could not read {0}", nm));
         }
-        text(fit(nm, colW - 70, 15), row.x + 12, row.y + 12, 15, col::text);
+        textRaw(fitRaw(nm, colW - 70, 15), row.x + 12, row.y + 12, 15, col::text);
         static std::string deleteArmed; // first click arms, second click deletes
         bool armed = deleteArmed == f;
         if (armed) textR("Click again to delete", listR.x + colW - 48, y + 14, 12, col::bad);
@@ -395,11 +398,11 @@ void loadModal(App& app) {
     endScroll();
     if (savedFiles.empty()) text("No saved designs yet", listR.x + 12, listR.y + 12, 15, col::faint);
     if (!toDelete.empty()) {
-        std::error_code ec;
+        std::error_code ec1, ec2;
         // only delete files inside the design directory
-        auto p = std::filesystem::weakly_canonical(toDelete, ec);
-        auto base = std::filesystem::weakly_canonical(app.designDir, ec);
-        if (!ec && p.parent_path() == base && p.extension() == ".sfd") std::filesystem::remove(p, ec);
+        auto p = std::filesystem::weakly_canonical(pathFromUtf8(toDelete), ec1);
+        auto base = std::filesystem::weakly_canonical(pathFromUtf8(app.designDir), ec2);
+        if (!ec1 && !ec2 && !p.empty() && p.parent_path() == base && pathToUtf8(p.extension()) == ".sfd") std::filesystem::remove(p, ec1);
         refreshSaved(app);
     }
 }
@@ -719,7 +722,7 @@ void factoryFrame(App& app) {
         float ix = R.x + R.width - 16 - 4 * 36;
         if (iconButton({ix, ey, 32, 32}, Icon::Up, false, "Move up", selected > 0 && !modal)) moveReq = -1;
         if (iconButton({ix + 36, ey, 32, 32}, Icon::Down, false, "Move down", selected + 1 < (int)D.stack.size() && !modal)) moveReq = 1;
-        if (iconButton({ix + 72, ey, 32, 32}, Icon::Copy, false, "Duplicate", !modal)) {
+        if (iconButton({ix + 72, ey, 32, 32}, Icon::Copy, false, "Duplicate", !modal && D.stack.size() < 60)) {
             PartInst cpy = p;
             D.stack.insert(D.stack.begin() + selected + 1, cpy);
             selected++;
@@ -755,7 +758,7 @@ void factoryFrame(App& app) {
                 stepper(R.x + 36, ey, R.width - 90, booster ? "Base height" : "Height", ra.offset, 0.25, -60, 120, 2, " m");
                 ey += 32;
                 double a = ra.angle;
-                if (stepper(R.x + 36, ey, R.width - 90, "Angle", a, 5, -5, 365, 0, "Â°")) ra.angle = std::fmod(a + 360.0, 360.0);
+                if (stepper(R.x + 36, ey, R.width - 90, "Angle", a, 5, -5, 365, 0, "°")) ra.angle = std::fmod(a + 360.0, 360.0);
                 ey += 36;
             }
             if (removeRadial >= 0) q.radial.erase(q.radial.begin() + removeRadial);
@@ -771,18 +774,20 @@ void factoryFrame(App& app) {
 
     // stats
     float sy = std::max(ey + 8, sl.y + sl.height + 60);
-    divider(R.x + 16, sy, R.width - 32);
-    sy += 10;
-    Rectangle statR{R.x + 8, sy, R.width - 16, R.y + R.height - sy - 8};
-    float statH = 150 + st.stages.size() * 22 + st.warnings.size() * 20 + 40;
-    off = beginScroll(3, statR, statH);
-    float y2 = statR.y - off;
-    float lx = statR.x + 8, rx = statR.x + statR.width - 12;
-    auto kv = [&](const std::string& k, const std::string& v, Color c = col::text) {
-        text(k, lx, y2, 14, col::dim);
-        textR(v, rx, y2, 14, c, true);
-        y2 += 21;
-    };
+    float statAvail = R.y + R.height - sy - 18;
+    if (statAvail >= 36.0f) {
+        divider(R.x + 16, sy, R.width - 32);
+        sy += 10;
+        Rectangle statR{R.x + 8, sy, R.width - 16, R.y + R.height - sy - 8};
+        float statH = 150 + st.stages.size() * 22 + st.warnings.size() * 20 + 40;
+        off = beginScroll(3, statR, statH);
+        float y2 = statR.y - off;
+        float lx = statR.x + 8, rx = statR.x + statR.width - 12;
+        auto kv = [&](const std::string& k, const std::string& v, Color c = col::text) {
+            text(k, lx, y2, 14, col::dim);
+            textR(v, rx, y2, 14, c, true);
+            y2 += 21;
+        };
     text("PERFORMANCE", lx, y2, 13, col::dim, true);
     y2 += 22;
     kv("Total mass", massStr(st.wetMass));
@@ -822,6 +827,7 @@ void factoryFrame(App& app) {
         y2 += 20;
     }
     endScroll();
+    }
 
     // status line
     if (GetTime() - app.statusTime < 4.0 && !app.status.empty()) {
@@ -844,6 +850,7 @@ void factoryFrame(App& app) {
         else if (primaryButton({r.x + 226, r.y + 110, 170, 40}, "Clear")) {
             D = Design{};
             selected = -1;
+            multiSel.clear();
             confirmNew = false;
         }
     }

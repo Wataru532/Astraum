@@ -1,0 +1,12 @@
+# build output (the executable is published as a GitHub release, not in the repository)
+/build*/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# raylib: only what the build uses is kept (examples, IDE projects, the API parser and the logos are left out)
+/third_party/raylib/examples/
+/third_party/raylib/projects/
+/third_party/raylib/parser/
+/third_party/raylib/logo/

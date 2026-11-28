@@ -110,13 +110,13 @@ struct Snap {
 struct Found { bool ok = false; double tDep = 0, tArr = 0; };
 
 struct PlanState {
-    int aId = -1, tId = -1;
+    int aId = -1, tId = -1, ref = -1;
     double tDep = 0, tArr = 0;
     bool valid = false;
     double lastSearch = -1e9;
     std::future<Found> job;
     bool running = false;
-    int jobA = -1, jobT = -1;
+    int jobA = -1, jobT = -1, jobRef = -1;
 };
 PlanState P;
 
@@ -372,9 +372,10 @@ Guidance compute(const World& W, const Vessel& a, const Vessel& t, double realNo
         g.message = tr("Both vessels must be in closed orbits for a rendezvous plan.");
         return g;
     }
-    if (P.aId != a.id || P.tId != t.id) {
+    if (P.aId != a.id || P.tId != t.id || P.ref != a.ref) {
         P.aId = a.id;
         P.tId = t.id;
+        P.ref = a.ref;
         P.valid = false;
         P.lastSearch = -1e9;
     }
@@ -393,7 +394,7 @@ Guidance compute(const World& W, const Vessel& a, const Vessel& t, double realNo
     if (P.running && P.job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         Found fd = P.job.get();
         P.running = false;
-        if (P.jobA == a.id && P.jobT == t.id) {
+        if (P.jobA == a.id && P.jobT == t.id && P.jobRef == a.ref) {
             P.valid = fd.ok;
             if (fd.ok) { P.tDep = fd.tDep; P.tArr = fd.tArr; }
         }
@@ -406,6 +407,7 @@ Guidance compute(const World& W, const Vessel& a, const Vessel& t, double realNo
         P.lastSearch = realNow;
         P.jobA = a.id;
         P.jobT = t.id;
+        P.jobRef = a.ref;
         Found cur{P.valid && e.ok, P.tDep, P.tArr};
         P.job = std::async(std::launch::async, search, S, cur);
         P.running = true;
@@ -436,6 +438,19 @@ Guidance compute(const World& W, const Vessel& a, const Vessel& t, double realNo
     g.mode = (g.tBurn - W.t < 1.0 && g.dvTotal < 0.3) ? Mode::Coast : Mode::Transfer;
     if (g.mode == Mode::Coast) g.burn = {};
     return g;
+}
+
+void invalidate() {
+    P.aId = P.tId = P.ref = -1;
+    P.jobA = P.jobT = P.jobRef = -1;
+    P.valid = false;
+    P.lastSearch = -1e9;
+}
+
+void shutdown() {
+    if (P.running && P.job.valid()) P.job.wait();
+    P.running = false;
+    invalidate();
 }
 
 } // namespace navg

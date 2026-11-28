@@ -5,10 +5,12 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include "app.hpp"
 #include "brand.hpp"
 #include "i18n.hpp"
 #include "ports.hpp"
+#include "storage.hpp"
 
 // Text sizes in points (1 pt = 96/72 logical px). UI body text is authored at 14 px,
 // so "Standard" = 11 pt = 14.67 px; the other steps keep the same ratios.
@@ -23,11 +25,13 @@ void loadPrefs(App& app) {
     // default: follow the system's display language
     app.lang = ports::systemLanguage();
     app.textSize = 1;
-    std::ifstream f(app.dataDir + "\\prefs.txt");
-    std::string key;
+    std::ifstream f(pathFromUtf8(app.dataDir + "\\prefs.txt"));
+    std::string line, key;
     int v, version = 1, textSize = 1;
     int oldVol = -1, oldMusicVol = -1, sfxPct = -1, musicPct = -1;
-    while (f >> key >> v) {
+    while (std::getline(f, line)) {
+        std::istringstream ls(line);
+        if (!(ls >> key >> v)) continue;
         if (key == "lang" && v >= 0 && v < i18n::COUNT) app.lang = v;
         if (key == "textsize" && v >= 0 && v < 4) textSize = v;
         if (key == "version") version = v;
@@ -65,23 +69,24 @@ std::string keysFile(const App& app) { return app.dataDir + "\\keys.txt"; }
 bool g_prefsReadOnly = false;
 
 void savePrefs(const App& app) {
-    if (g_prefsReadOnly) return;
-    std::ofstream f(app.dataDir + "\\prefs.txt");
+    if (g_prefsReadOnly || app.dataDir.empty()) return;
+    std::ostringstream f;
     f << "version 2\nlang " << app.lang << "\ntextsize " << app.textSize << "\nreversezoom " << (app.reverseZoom ? 1 : 0) << "\nsfxpct "
       << std::clamp(app.volumePct, 0, 100) << "\nmusic " << (app.music ? 1 : 0) << "\nmusicpct " << std::clamp(app.musicPct, 0, 100) << "\nterrainq " << app.terrainQuality << "\ndetailrange " << std::clamp(app.detailRange, 50, 400) << "\npbr " << (app.physicalShading ? 1 : 0) << "\nshadows " << (app.realShadows ? 1 : 0) << "\nshadowq " << app.shadowQuality << "\nautosave " << app.autosaveMin << "\nfpslimit " << app.fpsLimit << "\nshowfps " << (app.showFps ? 1 : 0) << "\nadaptive " << (app.adaptiveDetail ? 1 : 0) << "\nbelts " << (app.showBelts ? 1 : 0) << "\nfullscreen " << (app.fullscreen ? 1 : 0) << "\nuisize " << app.uiSize
       << "\ntutorials2 " << (app.tutorialsDone & 0xFFFFu) << "\n";
+    writeFileAtomic(app.dataDir + "\\prefs.txt", f.str());
 }
 
 void ensureDirs(App& app) {
     namespace fs = std::filesystem;
-    const char* ad = std::getenv("APPDATA");
-    fs::path base = ad ? fs::path(ad) / brand::DATA_FOLDER : fs::current_path() / (std::string(brand::DATA_FOLDER) + "Data");
+    std::string ad = ports::appDataDir();
+    fs::path base = !ad.empty() ? pathFromUtf8(ad) / brand::DATA_FOLDER : fs::current_path() / (std::string(brand::DATA_FOLDER) + "Data");
     std::error_code ec;
     fs::create_directories(base / "designs", ec);
-    app.dataDir = base.string();
-    app.designDir = (base / "designs").string();
-    app.saveFile = (base / "quicksave.sfs").string();
+    app.dataDir = pathToUtf8(base);
+    app.designDir = pathToUtf8(base / "designs");
+    app.saveFile = pathToUtf8(base / "quicksave.sfs");
     app.quickFile = app.saveFile;
-    app.mapsDir = (base / "maps").string();
-    app.lastDesignFile = (base / "last_design.sfd").string();
+    app.mapsDir = pathToUtf8(base / "maps");
+    app.lastDesignFile = pathToUtf8(base / "last_design.sfd");
 }

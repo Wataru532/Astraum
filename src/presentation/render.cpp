@@ -12,6 +12,8 @@
 #include <cstring>
 
 extern "C" __declspec(dllimport) void __stdcall glClear(unsigned int mask);
+extern "C" __declspec(dllimport) void __stdcall glDrawBuffer(unsigned int mode);
+extern "C" __declspec(dllimport) void __stdcall glReadBuffer(unsigned int mode);
 
 namespace gfx {
 namespace {
@@ -1270,8 +1272,8 @@ struct FinScope {
 PlanetLocs PL;
 int shipLight, shipLightI, shipAmbient, shipEmissive, shipCamPos, plumeCamPos, navOrient;
 Material planetMat, shipMat, plumeMat, starMat;
-Mesh sphereMesh, sphereLo, cubeMesh, capMesh, ringMesh, starMesh, plumeMesh, wedgeMesh, wakeMesh, sheathMesh;
-Mesh mwMesh{};      // the Milky Way sphere (texture mwTex)
+Mesh sphereMesh, sphereLo, cubeMesh, capMesh, starMesh, plumeMesh, wedgeMesh, wakeMesh, sheathMesh;
+std::map<int, Mesh> ringCache;
 Shader mwShader{};
 int mwLodLoc = -1, mwRowLoc[3] = {-1, -1, -1};
 // the Milky Way: each pixel turns its direction (the sphere's own coordinates: the ecliptic frame) into RA / Dec and
@@ -1308,7 +1310,6 @@ Material mwMat{};
 bool mwReady = false;
 float g_milkyWay = 0.62f; // brightness of the Milky Way layer
 int plumeLimb = -1;
-bool ringReady = false;
 Texture2D whiteTex, glowTex;
 // camera-facing sprite: raylib's DrawBillboard keeps world +Y as the sprite's up axis, which turns the
 // sprite edge-on (a thin streak) whenever the view looks along world Y; use the camera's own up instead
@@ -2581,6 +2582,11 @@ void init() {
     starMat.maps[MATERIAL_MAP_DIFFUSE].texture = glowTex;
 }
 
+namespace {
+void trimExtraCaches();
+void shutdownExtra();
+} // namespace
+
 void trimCaches(bool hard) {
     // baked planet fields are re-baked on demand (~one frame each)
     evictBaked(hard ? 0 : 3);
@@ -2593,6 +2599,7 @@ void trimCaches(bool hard) {
         UnloadMesh(kv.second.second);
     }
     halfCache.clear();
+    trimExtraCaches();
 }
 
 void shutdown() {
@@ -2610,6 +2617,11 @@ void shutdown() {
         UnloadMesh(kv.second.second);
     }
     halfCache.clear();
+    for (auto& kv : ringCache) UnloadMesh(kv.second);
+    ringCache.clear();
+    for (auto& kv : g_transLut)
+        if (kv.second.id) UnloadTexture(kv.second);
+    g_transLut.clear();
     UnloadMesh(sphereMesh);
     UnloadMesh(sphereLo);
     UnloadMesh(cubeMesh);
@@ -2623,15 +2635,26 @@ void shutdown() {
     UnloadMesh(canopyMesh[0]);
     UnloadMesh(canopyMesh[1]);
     UnloadMesh(wedgeMesh);
-    if (ringReady) UnloadMesh(ringMesh);
-    UnloadShader(planetShader);
-    UnloadShader(shipShader);
-    UnloadShader(plumeShader);
-    UnloadShader(plasmaShader);
-    UnloadShader(navShader);
+    auto unloadSh = [](Shader& sh) {
+        if (sh.id && sh.id != rlGetShaderIdDefault()) UnloadShader(sh);
+        sh = {};
+    };
+    unloadSh(planetStd);
+    unloadSh(shipStd);
+    unloadSh(planetPbr);
+    unloadSh(shipPbr);
+    unloadSh(skyShader);
+    unloadSh(plumeShader);
+    unloadSh(plasmaShader);
+    unloadSh(navShader);
+    unloadSh(mwShader);
+    planetShader = {};
+    shipShader = {};
+    if (mwTex.id) { UnloadTexture(mwTex); mwTex = {}; }
     UnloadTexture(whiteTex);
     UnloadTexture(glowTex);
     if (shadowTex.id) UnloadTexture(shadowTex);
+    shutdownExtra();
 }
 
 void begin3D(const Cam& c, double nearP, double farP) {
@@ -2727,10 +2750,8 @@ void drawBodySphere(const Universe& U, int body, const Vec3d& center, double rad
 void drawRings(const Universe& U, int body, const Vec3d& center, double unitsPerMeter, const Mat3d& rot, const Vec3d& sunDir) {
     const Body& b = U.bodies[body];
     if (b.ringOuter <= 0) return;
-    if (!ringReady) {
-        ringMesh = genRing((float)(b.ringInner / b.ringOuter), 256);
-        ringReady = true;
-    }
+    auto it = ringCache.find(body);
+    if (it == ringCache.end()) it = ringCache.emplace(body, genRing((float)(b.ringInner / b.ringOuter), 256)).first;
     setPlanetUniforms(b, rot, sunDir, 8, 4, 1.0f);
     setV3(planetShader, PL.center, center);
     setF(planetShader, PL.radius, (float)(b.radius * unitsPerMeter));
@@ -2738,7 +2759,7 @@ void drawRings(const Universe& U, int body, const Vec3d& center, double unitsPer
     rlDisableBackfaceCulling();
     rlDisableDepthMask();
     BeginBlendMode(BLEND_ALPHA);
-    DrawMesh(ringMesh, planetMat, toMatrix(rot, center, s, s, s));
+    DrawMesh(it->second, planetMat, toMatrix(rot, center, s, s, s));
     EndBlendMode();
     rlEnableDepthMask();
     rlEnableBackfaceCulling();
@@ -3158,9 +3179,9 @@ void drawVessel(const VesselVisual& vv, const Mat3d& rot, const Vec3d& origin, d
             cyl(c, z0 + h - plateH, plateH, g.rTop * 0.9, g.rTop, dark, 0, 0, em);
             double bellR;
             auto pos = clusterLayout(p.cluster, g.rTop, bellR, def.exitDiam * 0.5);
-            bool firing = vv.ignited && vv.seg && (*vv.seg)[i] == vv.bottomSeg && vv.throttle > 0;
+            bool firing = vv.ignited && vv.seg && i < (int)vv.seg->size() && (*vv.seg)[i] == vv.bottomSeg && vv.throttle > 0;
             double hasProp = 1;
-            if (vv.prop && !vv.infinite) {
+            if (vv.prop && vv.seg && !vv.infinite && (int)vv.seg->size() >= n && (int)vv.prop->size() >= n) {
                 // check any tank of this propellant left in the segment
                 hasProp = 0;
                 for (int k = 0; k < n; k++)
@@ -3864,6 +3885,10 @@ const Mesh& trussMesh(const Vec3d& d) {
     const int S = 6;
     int maxMem = 65000 / (S * 2);
     if ((int)mem.size() > maxMem) mem.resize(maxMem); // (16-bit indices)
+    if (trussCache.size() > 64) {
+        for (auto& kv : trussCache) UnloadMesh(kv.second);
+        trussCache.clear();
+    }
     Mesh m = allocMesh((int)mem.size() * S * 2, (int)mem.size() * S * 2);
     int v = 0, t = 0;
     for (auto& e : mem) {
@@ -4139,7 +4164,7 @@ void drawLaunchPad(const PadSpec& ps, const Mat3d& rot, const Vec3d& origin, con
         rlEnableDepthMask();
         EndBlendMode();
     }
-    rlEnableBackfaceCulling();
+    if (!g_shadowPass) rlEnableBackfaceCulling();
 }
 
 #include "render_base.inc" // surface base buildings (drawBase)
@@ -4733,7 +4758,7 @@ void drawCraft(const CraftVisual& cv, const Mat3d& rot, const Vec3d& origin, con
     }
     for (auto& cp : canopies) drawCanopies(c, cp.top, cv.chuteDir, cp.D, cp.n, cv.chuteOpen, cp.riser, cp.pilot, cv.chuteReef);
     if (cv.wire) rlDisableWireMode();
-    rlEnableBackfaceCulling();
+    if (!g_shadowPass) rlEnableBackfaceCulling();
     if (cv.xray) {
         rlEnableDepthMask();
         EndBlendMode();
@@ -5047,6 +5072,12 @@ bool setPhysicalShading(bool on) {
             skySun = GetShaderLocation(skyShader, "sunDir");
             g_pbrLoaded = true;
         } else {
+            if (shaderOk(planetPbr)) UnloadShader(planetPbr);
+            if (shaderOk(shipPbr)) UnloadShader(shipPbr);
+            if (shaderOk(skyShader)) UnloadShader(skyShader);
+            planetPbr = {};
+            shipPbr = {};
+            skyShader = {};
             g_pbrFailed = true;
             TraceLog(LOG_WARNING, "physically based shading: the shaders did not compile");
         }
@@ -5128,6 +5159,10 @@ bool ensureShadowMap() {
     rlEnableFramebuffer(g_shFbo);
     g_shTex = rlLoadTextureDepth(res, res, false);
     if (g_shTex) rlFramebufferAttach(g_shFbo, g_shTex, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0);
+    // rlFramebufferAttach unbinds to FBO 0 on return: re-bind g_shFbo before setting GL_NONE (0) for depth-only FBO
+    rlEnableFramebuffer(g_shFbo);
+    glDrawBuffer(0);
+    glReadBuffer(0);
     bool ok = g_shTex && rlFramebufferComplete(g_shFbo);
     rlDisableFramebuffer();
     if (!ok) {
@@ -5236,9 +5271,32 @@ Vector3 sunTintAt(const Universe& U, int body, const Vec3d& posRel, const Vec3d&
         odR += std::exp(-h / a.HR) * ds;
         odM += std::exp(-h / a.HM) * ds;
     }
-    return {(float)std::exp(-(a.bR.x * odR + a.bM.x * 1.1 * odM)), (float)std::exp(-(a.bR.y * odR + a.bM.y * 1.1 * odM)),
-            (float)std::exp(-(a.bR.z * odR + a.bM.z * 1.1 * odM))};
+    return {(float)std::exp(-(a.bR.x * odR + a.bMe.x * odM)), (float)std::exp(-(a.bR.y * odR + a.bMe.y * odM)),
+            (float)std::exp(-(a.bR.z * odR + a.bMe.z * odM))};
 }
+
+namespace {
+void trimExtraCaches() {
+    for (auto& kv : airfoilCache) UnloadMesh(kv.second);
+    airfoilCache.clear();
+    for (auto& kv : airfoilPartCache) UnloadMesh(kv.second);
+    airfoilPartCache.clear();
+    for (auto& kv : doorCache) UnloadMesh(kv.second);
+    doorCache.clear();
+    for (auto& kv : loftCache) UnloadMesh(kv.second);
+    loftCache.clear();
+    for (auto& kv : trussCache) UnloadMesh(kv.second);
+    trussCache.clear();
+}
+void shutdownExtra() {
+    trimExtraCaches();
+    releaseShadowMap();
+    if (shaderOk(g_depthSh)) { UnloadShader(g_depthSh); g_depthSh = {}; }
+    for (Texture2D& t : g_baseTex)
+        if (t.id) { UnloadTexture(t); t = {}; }
+    g_baseTexReady = false;
+}
+} // namespace
 
 void drawPhysicalSky(const Universe& U, int body, const Vec3d& camRel, const Vec3d& fwd, const Vec3d& up, float fovyDeg, const Vec3d& sunDir) {
     if (!g_pbr || !shaderOk(skyShader)) return;

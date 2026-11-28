@@ -192,7 +192,7 @@ void settingsModal(App& app) {
     panel(r, Color{20, 26, 36, 252}, 14);
     icon(Icon::Gear, {r.x + 24, r.y + 20, 24, 24}, col::accent);
     text("Settings", r.x + 58, r.y + 18, 24, col::text, true);
-    if (iconButton({r.x + r.width - 48, r.y + 16, 32, 32}, Icon::Close) || IsKeyPressed(KEY_ESCAPE)) {
+    if (iconButton({r.x + r.width - 48, r.y + 16, 32, 32}, Icon::Close) || (IsKeyPressed(KEY_ESCAPE) && !ui::editing())) {
         app.settingsOpen = false;
         savePrefs(app);
         return;
@@ -567,7 +567,7 @@ void crashModal(App& app) {
         if (ly > inner.y - lh && ly < inner.y + inner.height) {
             std::string ln = app.crashReport.substr(pos, e - pos);
             if (!ln.empty() && ln.back() == '\r') ln.pop_back();
-            text(fit(ln, inner.width - 8, 12), inner.x, ly, 12, Color{190, 200, 215, 255});
+            textRaw(fitRaw(ln, inner.width - 8, 12), inner.x, ly, 12, Color{190, 200, 215, 255});
         }
         pos = e + 1;
     }
@@ -586,6 +586,7 @@ void crashModal(App& app) {
 namespace {
 
 void drawMenuBackground(App& app) {
+    gfx::setNightLift(0.f); // (do not carry flight night-vision brightness back onto the title screen)
     const Universe& U = app.world.U;
     ClearBackground(Color{3, 5, 9, 255});
     gfx::Cam cam;
@@ -665,7 +666,7 @@ void menuFrame_(App& app) {
         "N-body gravity on Keplerian rails  ·  sphere-of-influence transitions  ·  time warp to x100,000,000",
         "Rotating atmospheres, drag and entry heating  ·  pressure-dependent engine Isp  ·  staging",
         "Batteries, solar panels (1/r²), RTGs, fission reactors, ion thrusters and solar sails",
-        "Solar System (24 bodies) + Alpha Centauri A/B, Proxima Centauri and Barnard's Star",
+        "Solar System (30 bodies) + Alpha Centauri A/B, Proxima Centauri and Barnard's Star",
     };
     for (int i = 0; i < 4; i++) text(fit(lines[i], card.width - 36, 14), card.x + 18, card.y + 40 + i * 24, 14, Color{200, 210, 225, 255});
     if (GetTime() - app.statusTime < 4.0 && !app.status.empty()) text(app.status, x, y + 64, 15, col::warn);

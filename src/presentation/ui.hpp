@@ -77,7 +77,9 @@ void textRaw(const std::string& s, float x, float y, float size, Color c, bool b
 void textC(const std::string& s, Rectangle r, float size, Color c, bool bold = false); // centred in rect
 void textR(const std::string& s, float xRight, float y, float size, Color c, bool bold = false);
 Vector2 measure(const std::string& s, float size, bool bold = false);
+Vector2 measureRaw(const std::string& s, float size, bool bold = false);
 std::string fit(const std::string& s, float maxW, float size, bool bold = false);
+std::string fitRaw(const std::string& s, float maxW, float size, bool bold = false);
 
 void panel(Rectangle r, Color c = col::panel, float round = 10);
 void divider(float x, float y, float w);

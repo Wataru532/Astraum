@@ -5,10 +5,11 @@
 
 namespace ports {
 
-// the platform: a monotonic clock in seconds, the system's display language (i18n::Lang), a log line
+// the platform: a monotonic clock in seconds, the system's display language (i18n::Lang), Roaming AppData (UTF-8), a log line
 struct Platform {
     double (*now)() = nullptr;
     int (*systemLanguage)() = nullptr;
+    std::string (*appDataDir)() = nullptr;
     void (*log)(const char* line) = nullptr;
 };
 // the presentation: the map's picture (a copy of the view), the guided tutorials
@@ -25,6 +26,7 @@ void install(const Presentation& p);
 
 double now();
 int systemLanguage();
+std::string appDataDir();
 void log(const char* fmt, ...);
 
 // the presentation port with no-op defaults for the parts not plugged in

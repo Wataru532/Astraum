@@ -1,5 +1,6 @@
-// Windows resources: application icon and version information
+// Windows resources: application icon, UTF-8 active code page manifest, and version information
 1 ICON "../assets/icon.ico"
+1 24 "app.manifest"
 
 // surface maps (public domain NASA / USGS data, see assets/maps/SOURCES.txt; built by tools/make_maps.py)
 201 RCDATA "../assets/maps/earth_color.jpg"
@@ -55,8 +56,8 @@
 216 RCDATA "../assets/maps/mars_height_hi.pak"
 
 1 VERSIONINFO
-FILEVERSION 1,2,0,0
-PRODUCTVERSION 1,2,0,0
+FILEVERSION 1,2,1,0
+PRODUCTVERSION 1,2,1,0
 FILEOS 0x40004
 FILETYPE 0x1
 BEGIN
@@ -65,11 +66,11 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "FileDescription", "Astraum - space exploration simulator"
-            VALUE "FileVersion", "1.2.0"
+            VALUE "FileVersion", "1.2.1"
             VALUE "InternalName", "Astraum"
             VALUE "OriginalFilename", "Astraum.exe"
             VALUE "ProductName", "Astraum"
-            VALUE "ProductVersion", "1.2.0"
+            VALUE "ProductVersion", "1.2.1"
         END
     END
     BLOCK "VarFileInfo"

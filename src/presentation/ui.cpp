@@ -315,6 +315,12 @@ void setLanguage(int lang) {
     fB16 = load(bold, cjkB, atlasSmall);
     fB32 = load(bold, cjkB, atlasLarge);
     fontsOk = fR16.texture.id && fR32.texture.id && fB16.texture.id && fB32.texture.id;
+    if (!fontsOk) {
+        if (fR16.texture.id) { UnloadFont(fR16); fR16 = {}; }
+        if (fR32.texture.id) { UnloadFont(fR32); fR32 = {}; }
+        if (fB16.texture.id) { UnloadFont(fB16); fB16 = {}; }
+        if (fB32.texture.id) { UnloadFont(fB32); fB32 = {}; }
+    }
 }
 
 void init(int lang) {
@@ -435,6 +441,12 @@ void ensureGlyphs(const std::string& s) {
     }
 }
 
+extern int g_numPressId;
+extern bool g_numDragging;
+static int g_sliderDragId = -1;
+static bool g_sliderSeen = false;
+static bool g_numPressSeen = false;
+
 void beginFrame() {
     g_testClick = g_testClickPending;
     g_testClickPending = false;
@@ -448,6 +460,15 @@ void beginFrame() {
         g_editId = -1;
     }
     g_focusSeen = false;
+    if (g_numPressId >= 0 && (!g_numPressSeen || !IsMouseButtonDown(MOUSE_BUTTON_LEFT))) {
+        g_numPressId = -1;
+        g_numDragging = false;
+    }
+    g_numPressSeen = false;
+    if (g_sliderDragId >= 0 && (!g_sliderSeen || !IsMouseButtonDown(MOUSE_BUTTON_LEFT))) {
+        g_sliderDragId = -1;
+    }
+    g_sliderSeen = false;
     if (g_ewReq != g_ewShown) {
         SetMouseCursor(g_ewReq ? MOUSE_CURSOR_RESIZE_EW : MOUSE_CURSOR_DEFAULT);
         g_ewShown = g_ewReq;
@@ -474,6 +495,9 @@ bool inputBlocked() { return g_inputBlocked; }
 void cancelEdit() {
     focusId = -1;
     g_editId = -1;
+    g_numPressId = -1;
+    g_numDragging = false;
+    g_sliderDragId = -1;
 }
 void blockRect(Rectangle r) {
     if (CheckCollisionPointRec(GetMousePosition(), r)) overNow = true;
@@ -487,10 +511,12 @@ void textRaw(const std::string& s, float x, float y, float size, Color c, bool b
     Font f = pick(size, bold);
     DrawTextEx(f, s.c_str(), {std::round(x), std::round(y)}, size, 0.0f, c);
 }
-Vector2 measure(const std::string& s, float size, bool bold) {
-    std::string t = tr(s);
+Vector2 measureRaw(const std::string& s, float size, bool bold) {
     size *= g_scale * g_lineRatio;
-    return MeasureTextEx(pick(size, bold), t.c_str(), size, 0.0f);
+    return MeasureTextEx(pick(size, bold), s.c_str(), size, 0.0f);
+}
+Vector2 measure(const std::string& s, float size, bool bold) {
+    return measureRaw(tr(s), size, bold);
 }
 void textC(const std::string& s, Rectangle r, float size, Color c, bool bold) {
     Vector2 m = measure(s, size, bold);
@@ -500,9 +526,8 @@ void textR(const std::string& s, float xr, float y, float size, Color c, bool bo
     Vector2 m = measure(s, size, bold);
     text(s, xr - m.x, y, size, c, bold);
 }
-std::string fit(const std::string& s, float maxW, float size, bool bold) {
-    std::string t = tr(s);
-    if (measure(t, size, bold).x <= maxW) return t;
+std::string fitRaw(const std::string& t, float maxW, float size, bool bold) {
+    if (measureRaw(t, size, bold).x <= maxW) return t;
     // trim whole UTF-8 codepoints
     std::vector<size_t> starts;
     for (size_t i = 0; i < t.size();) {
@@ -512,9 +537,12 @@ std::string fit(const std::string& s, float maxW, float size, bool bold) {
     while (!starts.empty()) {
         std::string o = t.substr(0, starts.back()) + "...";
         starts.pop_back();
-        if (measure(o, size, bold).x <= maxW) return o;
+        if (measureRaw(o, size, bold).x <= maxW) return o;
     }
     return "...";
+}
+std::string fit(const std::string& s, float maxW, float size, bool bold) {
+    return fitRaw(tr(s), maxW, size, bold);
 }
 
 void panel(Rectangle r, Color c, float round) {
@@ -624,7 +652,7 @@ bool chip(Rectangle r, const std::string& label, bool active) {
 }
 
 bool slider(Rectangle r, double& v, double lo, double hi, double step, int id, bool* committed, bool enabled) {
-    static int dragId = -1;
+    int& dragId = g_sliderDragId;
     if (committed) *committed = false;
     if (hi <= lo) return false;
     auto snap = [&](double x) {
@@ -641,6 +669,7 @@ bool slider(Rectangle r, double& v, double lo, double hi, double step, int id, b
     }
     bool dragging = dragId == id;
     if (dragging) {
+        g_sliderSeen = true;
         overNow = true;
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && enabled && !g_inputBlocked)
             v = snap(lo + (mx - r.x) / std::max(r.width, 1.0f) * (hi - lo));
@@ -842,8 +871,16 @@ bool textInput(Rectangle r, std::string& s, int maxLen, int id) {
         if (ctrl && IsKeyPressed(KEY_V)) {
             const char* c = GetClipboardText();
             if (c) {
+                std::string raw(c);
+                for (char& ch : raw)
+                    if ((unsigned char)ch < 32) ch = ' ';
                 std::string t;
-                for (const char* q = c; *q && t.size() < 400; q++) t.push_back((unsigned char)*q < 32 ? ' ' : *q); // (one line)
+                for (size_t i = 0; i < raw.size();) {
+                    size_t ni = nextCpI(raw, i);
+                    if (t.size() + (ni - i) > 400) break;
+                    t.append(raw, i, ni - i);
+                    i = ni;
+                }
                 insertText(t);
             }
         }
@@ -890,8 +927,8 @@ bool textInput(Rectangle r, std::string& s, int maxLen, int id) {
     ensureGlyphs(s);
     float ty = r.y + (r.height - 18) / 2;
     if (!focused) {
-        std::string shown = fit(s, r.width - 20, 16);
-        text(shown, r.x + pad, ty, 16, col::text);
+        std::string shown = fitRaw(s, r.width - 20, 16);
+        textRaw(shown, r.x + pad, ty, 16, col::text);
         return changed;
     }
     // ---- the focused field: the text as it is, scrolled so that the caret stays in view
@@ -935,6 +972,7 @@ bool numberField(Rectangle r, double& v, int prec, const char* unit, int id, dou
     bool changed = false;
     if (g_numPressId == id) {
         g_focusSeen = true; // (keeps the press alive while the mouse is off the field)
+        g_numPressSeen = true;
         float dx = GetMousePosition().x - g_numPressX;
         if (!g_numDragging && std::fabs(dx) > 4) g_numDragging = true;
         if (g_numDragging) {
@@ -986,6 +1024,7 @@ bool numberField(Rectangle r, double& v, int prec, const char* unit, int id, dou
     } else if (h && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !anyClickConsumed && g_numPressId < 0) {
         anyClickConsumed = true;
         g_numPressId = id;
+        g_numPressSeen = true;
         g_numDragging = false;
         g_numPressX = GetMousePosition().x;
         g_numV0 = v;

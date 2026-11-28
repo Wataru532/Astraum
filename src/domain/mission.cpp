@@ -432,7 +432,10 @@ Plan computeNow(const World& W, const Vessel& v, int target) {
 
 } // namespace
 
-void invalidate() { g_cache = Cache{}; }  // (the chosen departure stays: it follows the vessel)
+void invalidate() {
+    g_cache = Cache{};
+    g_lastDep = LastDep{};
+}
 
 Plan compute(const World& W, const Vessel& v, int target) {
     // the searches take a few milliseconds: the plan is kept for half a second of real time (its times are

@@ -45,9 +45,9 @@ def left_edge_lon(img):
     keys, dbl = tags.get(34735), tags.get(34736)
     if keys and dbl and abs(full - 360.0) > 1e-6:
         k = list(keys)
-        for i in range(4, len(k), 4):
+        for i in range(4, len(k) - 3, 4):
             kid, loc, cnt, val = k[i:i + 4]
-            if kid in (3080, 3088) and loc == 34736:
+            if kid in (3080, 3088) and loc == 34736 and 0 <= val < len(dbl):
                 central = float(dbl[val])
     lon = central + x / full * 360.0
     return (lon + 180.0) % 360.0 - 180.0
@@ -104,7 +104,7 @@ def make(src, out, fname, body, W, tint, mean, sat):
     # the gaps: the other hemisphere mirrored and blurred where it was seen (a surface of the body's own kind
     # rather than a flat band), the mean colour elsewhere; the border blurred into it
     if (~good).any():
-        mean_c = small[good].mean(axis=0)
+        mean_c = small[good].mean(axis=0) if good.any() else np.array([0.5, 0.5, 0.5], dtype=np.float32)
         mirror = small[::-1]
         mgood = good[::-1]
         fill = np.where(mgood[..., None], mirror, mean_c)

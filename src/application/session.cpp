@@ -1,11 +1,11 @@
 // Use cases of a game session: maps (one saved game each, named by the player), autosave bookkeeping and the
 // factory's last design. The dialogs around them are in presentation/map_dialogs.cpp.
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
-#include <sys/stat.h>
 #include <atomic>
 #include <thread>
 #include <map>
@@ -17,11 +17,25 @@
 
 namespace fs = std::filesystem;
 
-
 static long long fileTime(const std::string& path) {
-    struct _stat64 st;
-    if (_stat64(path.c_str(), &st) != 0) return 0;
-    return (long long)st.st_mtime;
+    std::error_code ec;
+    fs::path p = pathFromUtf8(path);
+    if (p.empty()) return 0;
+    auto ft = fs::last_write_time(p, ec);
+    if (ec) return 0;
+    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+        ft - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+    return (long long)std::chrono::system_clock::to_time_t(sctp);
+}
+
+static bool isOwnedMapPath(const App& app, const std::string& path) {
+    if (path.empty() || app.mapsDir.empty()) return false;
+    std::error_code ec1, ec2;
+    fs::path p = fs::weakly_canonical(pathFromUtf8(path), ec1);
+    fs::path dir = fs::weakly_canonical(pathFromUtf8(app.mapsDir), ec2);
+    if (ec1 || ec2 || p.empty() || dir.empty() || p.parent_path() != dir) return false;
+    std::string fn = pathToUtf8(p.filename());
+    return fn.rfind("map_", 0) == 0 && pathToUtf8(p.extension()) == ".sfs";
 }
 
 std::string localTimeText(long long t) {
@@ -44,7 +58,7 @@ MapInfo readInfo(const std::string& path) {
     MapInfo m;
     m.path = path;
     m.savedAt = fileTime(path);
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(pathFromUtf8(path), std::ios::binary);
     std::string line;
     int n = 0;
     while (std::getline(f, line) && n++ < 2000000) {
@@ -54,22 +68,6 @@ MapInfo readInfo(const std::string& path) {
     }
     if (m.name.empty()) m.name = tr("Saved game");
     return m;
-}
-
-// writes `text` to `path` through a temporary file (an interrupted write never destroys the old file)
-static bool writeAtomic(const std::string& path, const std::string& text) {
-    std::string tmp = path + ".tmp";
-    {
-        std::ofstream f(tmp, std::ios::binary);
-        if (!f) return false;
-        f << text;
-        f.flush();
-        if (!f) return false;
-    }
-    std::error_code ec;
-    fs::rename(tmp, path, ec);
-    if (ec) fs::remove(tmp, ec);
-    return !ec;
 }
 
 void notice(App& app, const std::string& s, bool bad) {
@@ -83,27 +81,23 @@ static std::thread g_writer;
 static std::atomic<bool> g_writeFailed{false};
 
 std::string thumbPath(const std::string& mapPath) {
-    fs::path p(mapPath);
+    fs::path p = pathFromUtf8(mapPath);
     p.replace_extension(".png");
-    return p.string();
+    return pathToUtf8(p);
 }
 
 bool renameMap(App& app, const std::string& path, const std::string& name0) {
-    std::string name = trimmed(name0).substr(0, 120);
-    for (char& ch : name)
-        if (ch == '\n' || ch == '\r') ch = ' ';
-    if (name.empty() || !app.persist) return false;
+    std::string name = cleanLineText(trimmed(name0), 120);
+    if (name.empty() || !app.persist || !isOwnedMapPath(app, path)) return false;
     finishSaves();
     if (path == app.mapPath && app.gameStarted) {
         // the map being played: its world carries the name
         app.world.mapName = name;
         return saveMap(app, false, true);
     }
-    // another map: only its name line changes
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return false;
-    std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    f.close();
+    // another map: only its name line changes (bounded read)
+    std::string text;
+    if (!readFileLimited(path, text, 256u << 20)) return false;
     size_t eol = text.find('\n');
     if (!brand::hasTag(text.substr(0, eol == std::string::npos ? 0 : eol), "SAVE") || eol == std::string::npos) return false;
     size_t a = text.find("\nmapname ");
@@ -116,14 +110,19 @@ bool renameMap(App& app, const std::string& path, const std::string& name0) {
 }
 
 std::vector<MapInfo> listMaps(const App& app) {
+    finishSaves(); // avoid Windows sharing-violation against an in-flight background rename
     std::vector<MapInfo> out;
     std::error_code ec;
-    if (app.mapsDir.empty() || !fs::is_directory(app.mapsDir, ec)) return out;
-    for (auto& e : fs::directory_iterator(app.mapsDir, ec)) {
-        if (!e.is_regular_file(ec) || e.path().extension() != ".sfs") continue;
-        std::string fn = e.path().filename().string();
+    fs::path dir = pathFromUtf8(app.mapsDir);
+    if (dir.empty() || !fs::is_directory(dir, ec)) return out;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code ec2;
+        if (!it->is_regular_file(ec2) || pathToUtf8(it->path().extension()) != ".sfs") continue;
+        std::string fn = pathToUtf8(it->path().filename());
         if (fn.rfind("map_", 0) != 0) continue;
-        out.push_back(readInfo(e.path().string()));
+        std::string p = pathToUtf8(it->path());
+        if (p.empty()) continue;
+        out.push_back(readInfo(p));
         if (out.size() >= 500) break;
     }
     std::sort(out.begin(), out.end(), [](const MapInfo& a, const MapInfo& b) { return a.savedAt > b.savedAt; });
@@ -134,15 +133,28 @@ void markMapSaved(App& app) {
     const World& W = app.world;
     app.savedT = W.t;
     app.savedN = W.vessels.size();
+    app.savedBases = W.bases.size();
     app.savedActive = W.active;
     app.savedNextId = W.nextId;
+    app.savedNextBaseId = W.nextBaseId;
+    app.savedLaunchSite = W.settings.launchSite;
+    app.savedLaunchBase = W.settings.launchBase;
+    app.savedInfFuel = W.settings.infiniteFuel;
+    app.savedHyperspace = W.settings.hyperspace;
+    app.savedMapName = W.mapName;
+    app.saveFailed = false;
     app.lastSaveReal = ports::now();
 }
 
 bool mapDirty(const App& app) {
     if (app.mapPath.empty() || !app.gameStarted) return false;
+    if (app.saveFailed) return true;
     const World& W = app.world;
-    return W.t != app.savedT || W.vessels.size() != app.savedN || W.active != app.savedActive || W.nextId != app.savedNextId;
+    return W.t != app.savedT || W.vessels.size() != app.savedN || W.bases.size() != app.savedBases ||
+           W.active != app.savedActive || W.nextId != app.savedNextId || W.nextBaseId != app.savedNextBaseId ||
+           W.settings.launchSite != app.savedLaunchSite || W.settings.launchBase != app.savedLaunchBase ||
+           W.settings.infiniteFuel != app.savedInfFuel || W.settings.hyperspace != app.savedHyperspace ||
+           W.mapName != app.savedMapName;
 }
 
 void finishSaves() {
@@ -165,6 +177,7 @@ bool saveMap(App& app, bool autosave, bool wait) {
         notice(app, autosave ? trf("Autosaved \"{0}\"", app.world.mapName) : trf("Saved \"{0}\"", app.world.mapName));
         ports::log("map saved in %.1f ms (%s)", (ports::now() - t0) * 1000, autosave ? "autosave" : "save");
     } else {
+        app.saveFailed = true;
         notice(app, tr("Could not save the map"), true);
         app.lastSaveReal = ports::now(); // (not again at once)
     }
@@ -172,18 +185,19 @@ bool saveMap(App& app, bool autosave, bool wait) {
 }
 
 bool createMap(App& app, const std::string& name0) {
-    std::string name = trimmed(name0).substr(0, 120);
+    std::string name = cleanLineText(trimmed(name0), 120);
     if (name.empty() || !app.persist) return false;
     if (mapDirty(app)) saveMap(app, false); // the game being left
     std::error_code ec;
-    fs::create_directories(app.mapsDir, ec);
+    fs::path dir = pathFromUtf8(app.mapsDir);
+    fs::create_directories(dir, ec);
     // a generated ASCII file name: the player's name may hold any character
     std::string path;
     for (int i = 1; i < 100000 && path.empty(); i++) {
         char b[32];
         std::snprintf(b, sizeof b, "map_%04d.sfs", i);
-        std::string p = (fs::path(app.mapsDir) / b).string();
-        if (!fs::exists(p, ec)) path = p;
+        fs::path fp = dir / b;
+        if (!fs::exists(fp, ec)) path = pathToUtf8(fp);
     }
     if (path.empty()) return false;
     Settings s = app.world.settings;
@@ -228,12 +242,14 @@ bool loadMap(App& app, const std::string& path) {
 bool deleteMap(App& app, const std::string& path) {
     finishSaves();
     std::error_code ec;
-    if (path.empty() || fs::path(path).parent_path() != fs::path(app.mapsDir)) return false; // (only our own files)
-    bool ok = fs::remove(path, ec);
-    fs::remove(path + ".tmp", ec);
-    fs::remove(thumbPath(path), ec); // (its picture)
+    if (!isOwnedMapPath(app, path)) return false; // (only our own files)
+    bool ok = fs::remove(pathFromUtf8(path), ec);
+    fs::remove(pathFromUtf8(path + ".tmp"), ec);
+    fs::remove(pathFromUtf8(thumbPath(path)), ec); // (its picture)
     if (ok && path == app.mapPath) {
         // the map being played is gone: back to an empty game
+        ports::presentation().stopTutorial();
+        ports::presentation().worldReplaced();
         app.mapPath.clear();
         app.saveFile = app.quickFile;
         app.gameStarted = false;
@@ -251,7 +267,10 @@ void leaveMap(App& app) {
 }
 
 void serviceSaves(App& app) {
-    if (g_writeFailed.exchange(false)) notice(app, tr("Could not save the map"), true);
+    if (g_writeFailed.exchange(false)) {
+        app.saveFailed = true;
+        notice(app, tr("Could not save the map"), true);
+    }
     ports::presentation().serviceThumbs();
 }
 
@@ -268,7 +287,7 @@ void persistDesign(App& app, bool force) {
     if (app.design.stack.empty()) return;
     std::string t = designToText(app.design);
     if (t == app.designText) return;
-    if (writeAtomic(app.lastDesignFile, t)) app.designText = t;
+    if (writeFileAtomic(app.lastDesignFile, t)) app.designText = t;
 }
 
 void restoreDesign(App& app) {
@@ -288,9 +307,10 @@ void loadLastDesign(App& app) {
 void migrateQuicksave(App& app) {
     // the quicksave of earlier versions becomes the first map (the old file stays where it was)
     std::error_code ec;
-    if (fs::exists(app.mapsDir, ec)) return;
-    fs::create_directories(app.mapsDir, ec);
-    if (!fs::exists(app.quickFile, ec)) return;
-    fs::copy_file(app.quickFile, (fs::path(app.mapsDir) / "map_0001.sfs").string(), ec);
+    fs::path dir = pathFromUtf8(app.mapsDir), qf = pathFromUtf8(app.quickFile);
+    if (dir.empty() || fs::exists(dir, ec)) return;
+    fs::create_directories(dir, ec);
+    if (qf.empty() || !fs::exists(qf, ec)) return;
+    fs::copy_file(qf, dir / "map_0001.sfs", ec);
 }
 

@@ -964,7 +964,7 @@ bool designFromText(Design& d, const std::string& text) {
             PartInst p;
             ls >> id >> p.diam >> p.diam2 >> p.length >> p.cluster;
             int def = CATALOG.find(id);
-            if (def < 0 || ls.fail()) continue;
+            if (def < 0 || ls.fail() || !std::isfinite(p.diam) || !std::isfinite(p.diam2) || !std::isfinite(p.length)) continue;
             p.def = def;
             p.diam = clampd(p.diam, 0.3, 12.0);
             p.diam2 = clampd(p.diam2, 0.3, 12.0);

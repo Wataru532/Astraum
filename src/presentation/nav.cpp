@@ -346,7 +346,7 @@ bool viewCube(OrbitCam& c, Rectangle area, const FitFn& home) {
     }
     // home button
     Rectangle homeR{C.x - 56, C.y - 60, 22, 22};
-    bool homeHover = CheckCollisionPointRec(m, homeR);
+    bool homeHover = !ui::inputBlocked() && CheckCollisionPointRec(m, homeR);
     DrawRectangleRounded(homeR, 0.3f, 4, homeHover ? Color{56, 189, 248, 220} : Color{40, 48, 64, 200});
     ui::icon(ui::Icon::Home, {homeR.x + 4, homeR.y + 4, 14, 14}, homeHover ? Color{8, 14, 22, 255} : ui::col::text);
     if (homeHover) ui::tooltip("Home view");

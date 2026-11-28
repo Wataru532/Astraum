@@ -213,6 +213,7 @@ struct WorldSnapshot {
     std::vector<unsigned> explored;
     std::vector<SurfaceBase> bases; // (a rewind also takes back a base built since: its lander comes back)
     int nextBaseId = 1;
+    double dockHoldUntil = 0;
 };
 
 // mission log: every notification, kept for the session (newest last)

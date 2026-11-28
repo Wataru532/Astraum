@@ -7,9 +7,12 @@
 #include <algorithm>
 #include <csignal>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include "crash.hpp"
@@ -17,16 +20,52 @@
 namespace crash {
 namespace {
 
-char g_dir[MAX_PATH] = {0};
+constexpr size_t DIR_CAP = 1024;
+wchar_t g_dirW[DIR_CAP] = {0};
+char g_dirUtf8[DIR_CAP * 2] = {0};
 char g_version[64] = "?";
 char g_state[600] = "";
-const int NCRUMB = 64, NLOG = 40;
+volatile LONG g_stateLock = 0;
+const uint32_t NCRUMB = 64, NLOG = 40;
 char g_crumbs[NCRUMB][180];
 char g_logs[NLOG][220];
 volatile LONG g_crumbIdx = 0, g_logIdx = 0;
 volatile LONG g_inHandler = 0;
+volatile LONG g_reportDone = 0;
 char g_buf[96 * 1024];
 size_t g_pos = 0;
+
+bool utf8ToWide(const char* src, wchar_t* dst, size_t dstCap) {
+    if (!src || !dst || dstCap == 0) return false;
+    int n = MultiByteToWideChar(CP_UTF8, 0, src, -1, dst, (int)dstCap);
+    if (n <= 0) {
+        dst[0] = L'\0';
+        return false;
+    }
+    return true;
+}
+
+void wideToUtf8(const wchar_t* src, char* dst, size_t dstCap) {
+    if (!src || !dst || dstCap == 0) return;
+    int n = WideCharToMultiByte(CP_UTF8, 0, src, -1, dst, (int)dstCap, nullptr, nullptr);
+    if (n <= 0) dst[0] = '\0';
+}
+
+bool canReadStack(const void* addr, size_t bytes) {
+    if (!addr) return false;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(addr, &mbi, sizeof mbi) == 0) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    DWORD p = mbi.Protect;
+    if ((p & PAGE_GUARD) || (p & PAGE_NOACCESS)) return false;
+    DWORD base = p & 0xFF;
+    bool readable = base == PAGE_READONLY || base == PAGE_READWRITE || base == PAGE_WRITECOPY ||
+                    base == PAGE_EXECUTE_READ || base == PAGE_EXECUTE_READWRITE || base == PAGE_EXECUTE_WRITECOPY;
+    if (!readable) return false;
+    uintptr_t start = (uintptr_t)addr;
+    uintptr_t regionEnd = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+    return start <= regionEnd && bytes <= regionEnd - start;
+}
 
 void put(const char* fmt, ...) {
     if (g_pos >= sizeof(g_buf) - 1) return;
@@ -57,11 +96,13 @@ const char* exceptionName(DWORD code) {
 
 void describeAddress(DWORD64 addr) {
     HMODULE mod = nullptr;
-    char name[MAX_PATH] = "?";
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)addr, &mod) && mod) {
-        GetModuleFileNameA(mod, name, MAX_PATH);
-        const char* base = strrchr(name, '\\');
-        put("0x%016llx  %s+0x%llx\n", (unsigned long long)addr, base ? base + 1 : name, (unsigned long long)(addr - (DWORD64)mod));
+    wchar_t wname[MAX_PATH] = L"?";
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)addr, &mod) && mod) {
+        GetModuleFileNameW(mod, wname, MAX_PATH);
+        const wchar_t* baseW = wcsrchr(wname, L'\\');
+        char base[MAX_PATH * 3] = "?";
+        wideToUtf8(baseW ? baseW + 1 : wname, base, sizeof base);
+        put("0x%016llx  %s+0x%llx\n", (unsigned long long)addr, base[0] ? base : "?", (unsigned long long)(addr - (DWORD64)mod));
     } else {
         put("0x%016llx  ?\n", (unsigned long long)addr);
     }
@@ -81,7 +122,7 @@ void stackTrace(CONTEXT ctx) {
             RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, ctx.Rip, fn, &ctx, &handlerData, &establisher, nullptr);
         } else {
             // leaf function: return address is on top of the stack
-            if (IsBadReadPtr((void*)ctx.Rsp, sizeof(DWORD64))) break;
+            if (!canReadStack((const void*)ctx.Rsp, sizeof(DWORD64))) break;
             ctx.Rip = *(DWORD64*)ctx.Rsp;
             ctx.Rsp += 8;
         }
@@ -112,7 +153,11 @@ void systemInfo() {
 }
 
 void writeReport(const char* reason, const CONTEXT* ctx, const EXCEPTION_RECORD* er) {
-    if (InterlockedExchange(&g_inHandler, 1)) return; // already reporting
+    if (InterlockedExchange(&g_inHandler, 1)) {
+        // another thread is writing the report: wait briefly so we don't terminate mid-write
+        for (int i = 0; i < 300 && !InterlockedCompareExchange(&g_reportDone, 0, 0); i++) Sleep(10);
+        return;
+    }
     g_pos = 0;
     SYSTEMTIME st;
     GetLocalTime(&st);
@@ -137,36 +182,51 @@ void writeReport(const char* reason, const CONTEXT* ctx, const EXCEPTION_RECORD*
         (unsigned long long)c.Rbx, (unsigned long long)c.Rcx, (unsigned long long)c.Rdx);
 #endif
     stackTrace(c);
-    put("\n--- Application state ---\n%s\n", g_state);
+    char stateCopy[sizeof g_state] = "";
+    bool gotState = false;
+    for (int i = 0; i < 100; i++) {
+        if (InterlockedExchange(&g_stateLock, 1) == 0) {
+            memcpy(stateCopy, g_state, sizeof stateCopy);
+            stateCopy[sizeof(stateCopy) - 1] = '\0';
+            InterlockedExchange(&g_stateLock, 0);
+            gotState = true;
+            break;
+        }
+        Sleep(0);
+    }
+    put("\n--- Application state ---\n%s\n", gotState ? stateCopy : "(busy)");
     put("\n--- System ---\n");
     systemInfo();
     put("\n--- Recent events (oldest first) ---\n");
-    LONG ci = g_crumbIdx;
-    for (int k = 0; k < NCRUMB; k++) {
+    uint32_t ci = (uint32_t)InterlockedCompareExchange(&g_crumbIdx, 0, 0);
+    for (uint32_t k = 0; k < NCRUMB; k++) {
         const char* s = g_crumbs[(ci + k) % NCRUMB];
         if (s[0]) put("%s\n", s);
     }
     put("\n--- Recent log ---\n");
-    LONG li = g_logIdx;
-    for (int k = 0; k < NLOG; k++) {
+    uint32_t li = (uint32_t)InterlockedCompareExchange(&g_logIdx, 0, 0);
+    for (uint32_t k = 0; k < NLOG; k++) {
         const char* s = g_logs[(li + k) % NLOG];
         if (s[0]) put("%s\n", s);
     }
-    char file[MAX_PATH], path[MAX_PATH], marker[MAX_PATH];
+    char file[64];
+    wchar_t fileW[64], pathW[DIR_CAP + 80], markerW[DIR_CAP + 32];
     snprintf(file, sizeof file, "crash-%04d%02d%02d-%02d%02d%02d.txt", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-    snprintf(path, sizeof path, "%s\\%s", g_dir, file);
-    snprintf(marker, sizeof marker, "%s\\pending.txt", g_dir);
-    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    swprintf(fileW, 64, L"crash-%04d%02d%02d-%02d%02d%02d.txt", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    swprintf(pathW, DIR_CAP + 80, L"%ls\\%ls", g_dirW, fileW);
+    swprintf(markerW, DIR_CAP + 32, L"%ls\\pending.txt", g_dirW);
+    HANDLE h = CreateFileW(pathW, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h != INVALID_HANDLE_VALUE) {
         DWORD wr;
         WriteFile(h, g_buf, (DWORD)g_pos, &wr, nullptr);
         CloseHandle(h);
-        HANDLE m = CreateFileA(marker, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE m = CreateFileW(markerW, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (m != INVALID_HANDLE_VALUE) {
             WriteFile(m, file, (DWORD)strlen(file), &wr, nullptr);
             CloseHandle(m);
         }
     }
+    InterlockedExchange(&g_reportDone, 1);
 }
 
 LONG WINAPI unhandledFilter(EXCEPTION_POINTERS* ep) {
@@ -212,9 +272,10 @@ void stamp(char* dst, size_t n, const char* fmt, va_list ap) {
 } // namespace
 
 void init(const std::string& dir, const char* version) {
-    snprintf(g_dir, sizeof g_dir, "%s", dir.c_str());
+    snprintf(g_dirUtf8, sizeof g_dirUtf8, "%s", dir.c_str());
+    utf8ToWide(dir.c_str(), g_dirW, DIR_CAP);
     snprintf(g_version, sizeof g_version, "%s", version);
-    CreateDirectoryA(g_dir, nullptr);
+    if (g_dirW[0]) CreateDirectoryW(g_dirW, nullptr);
     ULONG guarantee = 64 * 1024; // leave stack for the handler after a stack overflow
     SetThreadStackGuarantee(&guarantee);
     SetUnhandledExceptionFilter(unhandledFilter);
@@ -227,7 +288,7 @@ void init(const std::string& dir, const char* version) {
 }
 
 void breadcrumb(const char* fmt, ...) {
-    LONG i = (InterlockedIncrement(&g_crumbIdx) - 1) % NCRUMB;
+    uint32_t i = (uint32_t)(InterlockedIncrement(&g_crumbIdx) - 1) % NCRUMB;
     va_list ap;
     va_start(ap, fmt);
     stamp(g_crumbs[i], sizeof g_crumbs[i], fmt, ap);
@@ -235,28 +296,34 @@ void breadcrumb(const char* fmt, ...) {
 }
 
 void logLine(const char* line) {
-    LONG i = (InterlockedIncrement(&g_logIdx) - 1) % NLOG;
+    uint32_t i = (uint32_t)(InterlockedIncrement(&g_logIdx) - 1) % NLOG;
     snprintf(g_logs[i], sizeof g_logs[i], "%s", line);
 }
 
 void setState(const char* fmt, ...) {
+    char tmp[sizeof g_state];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(g_state, sizeof g_state, fmt, ap);
+    vsnprintf(tmp, sizeof tmp, fmt, ap);
     va_end(ap);
+    while (InterlockedExchange(&g_stateLock, 1) != 0) Sleep(0);
+    memcpy(g_state, tmp, sizeof g_state);
+    InterlockedExchange(&g_stateLock, 0);
 }
 
 bool pendingReport(std::string& text, std::string& path) {
-    std::string marker = std::string(g_dir) + "\\pending.txt";
-    std::ifstream m(marker);
+    if (!g_dirW[0]) return false;
+    std::filesystem::path dir(g_dirW);
+    std::ifstream m(dir / L"pending.txt");
     if (!m) return false;
     std::string file;
     std::getline(m, file);
+    if (!file.empty() && file.back() == '\r') file.pop_back();
     // only plain file names produced by this module are accepted
     if (file.size() < 10 || file.size() > 60 || file.find_first_of("\\/:") != std::string::npos || file.rfind("crash-", 0) != 0) return false;
-    path = std::string(g_dir) + "\\" + file;
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(dir / file, std::ios::binary);
     if (!f) return false;
+    path = std::string(g_dirUtf8) + "\\" + file;
     std::ostringstream os;
     os << f.rdbuf();
     text = os.str();
@@ -265,8 +332,10 @@ bool pendingReport(std::string& text, std::string& path) {
 }
 
 void markSeen() {
-    std::string marker = std::string(g_dir) + "\\pending.txt";
-    DeleteFileA(marker.c_str());
+    if (!g_dirW[0]) return;
+    wchar_t markerW[DIR_CAP + 32];
+    swprintf(markerW, DIR_CAP + 32, L"%ls\\pending.txt", g_dirW);
+    DeleteFileW(markerW);
 }
 
 void selfTest() {

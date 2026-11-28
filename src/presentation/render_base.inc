@@ -726,39 +726,45 @@ void drawBase(const BaseDrawSpec& s, const Mat3d& rot, const Vec3d& origin, cons
     }
     int storageIdx = 0;
     bool roverDone = false;
-    for (const BaseModuleDraw& m : s.mods) {
-        DrawCtx cm = c;
-        Mat3d Rm = rotZ(m.heading);
-        cm.base = toMatrix(rot * Rm, origin + rot * m.pos);
-        Vec3d toCentre = Rm.T() * (Vec3d{0, 0, 0} - Vec3d{m.pos.x, m.pos.y, 0});
-        int v = std::clamp(m.variant, 0, 2);
-        switch (m.kind) {
-        case ModuleKind::Habitat:
-            if (v == 0) habDome(cm, L);
-            else if (v == 1) habInflatable(cm, L);
-            else habTower(cm, L);
-            if (!roverDone) {
-                DrawCtx cr = c;
-                cr.base = toMatrix(rot * rotZ(m.heading + 1.2), origin + rot * (m.pos + Vec3d{16, -17, 0}));
-                parkedRover(cr, L);
-                roverDone = true;
+    // draw opaque base buildings first, then greenhouses (semi-transparent glass domes/tunnels) so glass never clips
+    // solid modules behind it
+    for (int pass = 0; pass < 2; pass++) {
+        for (const BaseModuleDraw& m : s.mods) {
+            bool isGreen = m.kind == ModuleKind::Greenhouse;
+            if ((pass == 0) == isGreen) continue;
+            DrawCtx cm = c;
+            Mat3d Rm = rotZ(m.heading);
+            cm.base = toMatrix(rot * Rm, origin + rot * m.pos);
+            Vec3d toCentre = Rm.T() * (Vec3d{0, 0, 0} - Vec3d{m.pos.x, m.pos.y, 0});
+            int v = std::clamp(m.variant, 0, 2);
+            switch (m.kind) {
+            case ModuleKind::Habitat:
+                if (v == 0) habDome(cm, L);
+                else if (v == 1) habInflatable(cm, L);
+                else habTower(cm, L);
+                if (!roverDone) {
+                    DrawCtx cr = c;
+                    cr.base = toMatrix(rot * rotZ(m.heading + 1.2), origin + rot * (m.pos + Vec3d{16, -17, 0}));
+                    parkedRover(cr, L);
+                    roverDone = true;
+                }
+                break;
+            case ModuleKind::Greenhouse:
+                if (v == 0) greenTunnel(cm, L);
+                else if (v == 1) greenDome(cm, L);
+                else greenTower(cm, L);
+                break;
+            case ModuleKind::Isru: isruPlant(cm, L, v); break;
+            case ModuleKind::Storage: storageTank(cm, L, v, storageIdx++); break;
+            case ModuleKind::Fission: fissionPlant(cm, L, v, toCentre); break;
+            case ModuleKind::Solar: solarField(cm, L, v); break;
+            case ModuleKind::Comms: commsMast(cm, L, v); break;
+            case ModuleKind::LaunchPad: launchPadBase(cm, L, s, toCentre); break;
+            default: break;
             }
-            break;
-        case ModuleKind::Greenhouse:
-            if (v == 0) greenTunnel(cm, L);
-            else if (v == 1) greenDome(cm, L);
-            else greenTower(cm, L);
-            break;
-        case ModuleKind::Isru: isruPlant(cm, L, v); break;
-        case ModuleKind::Storage: storageTank(cm, L, v, storageIdx++); break;
-        case ModuleKind::Fission: fissionPlant(cm, L, v, toCentre); break;
-        case ModuleKind::Solar: solarField(cm, L, v); break;
-        case ModuleKind::Comms: commsMast(cm, L, v); break;
-        case ModuleKind::LaunchPad: launchPadBase(cm, L, s, toCentre); break;
-        default: break;
         }
     }
-    rlEnableBackfaceCulling();
+    if (!g_shadowPass) rlEnableBackfaceCulling();
     // at night: the light of the windows, the grow lights, the pad's lamps and the beacons
     if (s.night > 0.05f) {
         struct G { Vec3d p; float size; Color c; };

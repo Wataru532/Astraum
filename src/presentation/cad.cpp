@@ -825,9 +825,10 @@ void propertiesPanel(App& app, Rectangle R) {
     text("SHAPE", x, y + 6, 12, col::faint, true);
     y += 26;
     {
-        const char* sn[] = {"Box", "Cylinder / cone", "Ellipsoid", "Wedge", "Airfoil", "Fuselage"};
+        const char* sn[] = {"Box", "Cylinder / cone", "Ellipsoid", "Wedge", "Airfoil", "Fuselage", "Truss"};
+        static_assert(sizeof sn / sizeof sn[0] == (size_t)Shape::COUNT, "a chip name for every shape");
         float cx = x;
-        for (int s = 0; s < 6; s++) {
+        for (int s = 0; s < (int)Shape::COUNT; s++) {
             float cw = measure(sn[s], 13, true).x + 20;
             if (cx + cw > x + w) { cx = x; y += 32; }
             if (chip({cx, y, cw, 26}, sn[s], (int)k.shape == s)) k.shape = (Shape)s;

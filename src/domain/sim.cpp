@@ -3,6 +3,7 @@
 #include "i18n.hpp"
 #include "diag.hpp"
 #include "ground.hpp"
+#include "mission.hpp"
 #include "navguide.hpp"
 #include "base.hpp"
 #include <algorithm>
@@ -11,6 +12,7 @@
 #include <cstdio>
 #include <ctime>
 #include <initializer_list>
+#include <set>
 #include <sstream>
 
 const double WARP_LEVELS[] = {1, 2, 3, 4, 10, 50, 100, 1000, 1e4, 1e5, 1e6, 1e7, 1e8};
@@ -120,7 +122,7 @@ std::string formatTime(double s) {
     char b[64];
     bool neg = s < 0;
     s = std::fabs(s);
-    if (!std::isfinite(s)) return "--";
+    if (!std::isfinite(s) || s > 1e15) return "--";
     long long tot = (long long)s;
     long long y = tot / (long long)YEAR;
     tot -= (long long)(y * YEAR);
@@ -133,6 +135,7 @@ std::string formatTime(double s) {
     return b;
 }
 std::string formatDate(double t) {
+    if (!std::isfinite(t) || std::fabs(t) > 1e15) return "--";
     double jd = 2451545.0 + t / DAY + 0.5;
     double Z = std::floor(jd), F = jd - Z;
     double A = Z;
@@ -181,6 +184,8 @@ void World::newGame(const Settings& s) {
     newAchievements.clear();
     recordsOn = true;
     dockHoldUntil = -1;
+    mission::invalidate();
+    navg::invalidate();
     explored.assign(U.count(), 0);
     explored[U.find("Earth")] = 1 | 2 | 4;
     toasts.clear();
@@ -326,7 +331,10 @@ void World::unloadComponents(int vi, std::vector<int> idx) {
         // seated again on its lowest contact (feet, wheels)
         Vec3d up = norm(v.landPos);
         double low = 0;
-        for (const Vec3d& k : v.contacts) low = std::min(low, dot(v.landQ.rotate(k - v.mp.com), up));
+        for (size_t k = 0; k < v.contacts.size(); k++) {
+            if ((v.contactLeg[k] == 1 || v.contactLeg[k] == 2) && !v.legsDeployed) continue;
+            low = std::min(low, dot(v.landQ.rotate(v.contacts[k] - v.mp.com), up));
+        }
         double ground = U.bodies[v.ref].radius + ground::height(v.ref, up);
         v.landPos = up * (ground - low + 0.02);
         pinLanded(*this, v, t);
@@ -1990,13 +1998,13 @@ static void checkRootDominance(World& W, Vessel& v, double t) {
     double bestA = 0;
     for (int rt : U.roots) {
         Vec3d d = U.relPos(S, rt, v.ref) - v.r;
-        double a = U.bodies[rt].GM / len2(d);
+        double a = U.bodies[rt].GM / std::max(len2(d), 1.0);
         if (a > bestA) { bestA = a; best = rt; }
     }
     int curRoot = U.bodies[v.ref].root;
     if (best >= 0 && best != curRoot) {
         Vec3d dCur = U.relPos(S, curRoot, v.ref) - v.r;
-        double aCur = U.bodies[curRoot].GM / len2(dCur);
+        double aCur = U.bodies[curRoot].GM / std::max(len2(dCur), 1.0);
         if (bestA > aCur * 1.2) {
             v.r = v.r + U.relPos(S, v.ref, best);
             v.v = v.v + U.relVel(S, v.ref, best);
@@ -2034,6 +2042,7 @@ static void checkGround(World& W, Vessel& v, double t) {
     const Universe& U = W.U;
     const Body& b = U.bodies[v.ref];
     double rl = len(v.r);
+    if (rl < 1e-6) return;
     if (rl - b.radius > 0.06 * b.radius + v.length + v.maxR + 60) return; // far above any relief
     if (rl - b.radius - (ground::hasRelief(v.ref) ? ground::maxHeight(v.ref) : 0.0) > v.length + v.maxR + 60) return;
     Vec3d up = v.r / rl;
@@ -2502,6 +2511,32 @@ static double advanceVessel(World& W, Vessel& v, double t0, double dt, bool isAc
         bool thrusting = thrustPossible(W, v) && (isActive || v.ignited);
         if (v.landed && !thrusting) {
             pinLanded(W, v, end);
+            double dh = end - tt;
+            const Body& bl = U.bodies[v.ref];
+            v.tThrust = 0;
+            std::fill(v.engLevel.begin(), v.engLevel.end(), 0.f);
+            v.tAccel = 0;
+            v.tDynP = 0;
+            v.tHeatFlux = 0;
+            v.tMach = 0;
+            v.tTorque = {};
+            v.tAlt = std::max(0.0, len(v.r) - bl.radius - ground::height(v.ref, v.landPos));
+            for (auto& hh : v.heat) hh = std::max(0.0, hh - 0.12 * dh);
+            if (!W.settings.infiniteFuel) {
+                U.computeStatesFor(end, U.relevant[v.ref], S0);
+                bool shadow = false;
+                double flux = starFlux(W, S0, v.ref, v.r, &shadow, nullptr, nullptr);
+                double gen = v.genW + v.solarArea * flux;
+                v.charge = clampd(v.charge + (gen - v.drawW) * dh, 0, v.chargeCap);
+                v.tPowerGen = gen;
+                v.tPowerUse = v.drawW;
+                v.tSolarFlux = flux;
+                v.tInShadow = shadow;
+                v.tPowerOut = v.charge <= 1e-6 && gen < v.drawW;
+            } else {
+                v.charge = v.chargeCap;
+                v.tPowerOut = false;
+            }
             tt = end;
             break;
         }
@@ -2514,6 +2549,7 @@ static double advanceVessel(World& W, Vessel& v, double t0, double dt, bool isAc
         // 1 s and the loop guard ended the frame early: under fast warp the vessel fell days behind the world
         // clock each frame - a rendezvous target jumped along its orbit)
         if (numeric && !isActive && numericSteps >= maxNumericSteps && !inAtm && !v.landed && !v.rolling) numeric = false;
+        double stepH = 0;
         if (numeric) {
             double h = std::min(rem, numericDt(W, v));
             if (numericSteps >= maxNumericSteps) {
@@ -2523,11 +2559,14 @@ static double advanceVessel(World& W, Vessel& v, double t0, double dt, bool isAc
             numericStep(W, v, tt, h, isActive, highWarp, S0, S1);
             numericSteps++;
             tt += h;
+            stepH = h;
             std::swap(S0, S1);
         } else {
             double h = std::min(rem, railsDt(W, v, S0));
             keplerPropagate(v.r, v.v, b.GM, h);
             tt += h;
+            stepH = h;
+            U.computeStatesFor(tt, U.relevant[v.ref], S0);
             v.tThrust = 0;
             std::fill(v.engLevel.begin(), v.engLevel.end(), 0.f); // coasting on rails: nothing burns
             v.tAccel = 0;
@@ -2548,12 +2587,11 @@ static double advanceVessel(World& W, Vessel& v, double t0, double dt, bool isAc
                 v.tInShadow = shadow;
                 v.tPowerOut = v.charge <= 1e-6 && gen < v.drawW;
             } else v.charge = v.chargeCap;
-            U.computeStatesFor(tt, U.relevant[v.ref], S0);
         }
         handleSOI(W, v, tt, S0);
         if (v.ref != refBefore) U.computeStatesFor(tt, U.relevant[v.ref], S0);
         checkGround(W, v, tt);
-        if (v.rolling) groundRoll(W, v, std::min(rem, numericDt(W, v)), tt);
+        if (v.rolling) groundRoll(W, v, stepH > 0 ? stepH : std::min(rem, numericDt(W, v)), tt);
         // a steep entry: within one frame the air gets thicker than the warp allows - the frame ends here
         if (isActive && !v.destroyed && W.warpIndex > PHYSICS_WARP_MAX) {
             const Body& b2 = U.bodies[v.ref];
@@ -2623,6 +2661,7 @@ void World::recordHistory(bool force) {
     s.explored = explored;
     s.bases = bases;
     s.nextBaseId = nextBaseId;
+    s.dockHoldUntil = dockHoldUntil;
     history.push_back(std::move(s));
     historyReal = realTime;
     // keep 10 minutes of game time (always at least the launch state), a bounded count and at most
@@ -2658,12 +2697,15 @@ bool World::rewind(double seconds) {
     explored = s.explored;
     if (bases.size() != s.bases.size()) { bases = s.bases; nextBaseId = s.nextBaseId; syncBaseTerrain(); }
     else { bases = s.bases; nextBaseId = s.nextBaseId; }
+    dockHoldUntil = s.dockHoldUntil;
     history.erase(history.begin() + pick + 1, history.end());
     warpIndex = 0;
     warpTo = -1;
     warpToRef = -1;
     events.clear();
     hyper = HyperJump{};
+    mission::invalidate();
+    navg::invalidate();
     refreshStates();
     diag::breadcrumb("rewind %.1f s", back);
     toast(trf("Rewound {0}", formatTime(back)), {150, 200, 255, 255});
@@ -3257,7 +3299,7 @@ int World::launch(const Craft& craft) {
     v.landPos = upF * (e.radius + ground + pad.deckH + h);
     padRocketLen = std::max(5.0, v.length);
     padRocketR = std::max(0.5, v.maxR);
-    Vec3d east = norm(cross(Vec3d{0, 0, 1}, upF));
+    Vec3d east = len(cross(Vec3d{0, 0, 1}, upF)) < 1e-9 ? Vec3d{0, 1, 0} : norm(cross(Vec3d{0, 0, 1}, upF));
     v.landQ = Quatd::lookRot(upF, -east);
     v.landed = true;
     v.legsDeployed = true;
@@ -3304,7 +3346,7 @@ int World::launchAircraft(const Craft& craft, int body) {
     } else if (const SurfaceBase* sb = firstBaseOn(body)) {
         // another world: beside the surface base there (north of its buildings, on its levelled ground)
         upF = baseDir(*sb, b.radius, DEPLOY_X, DEPLOY_Y);
-        east = norm(cross(Vec3d{0, 0, 1}, upF));
+        east = len(cross(Vec3d{0, 0, 1}, upF)) < 1e-9 ? Vec3d{0, 1, 0} : norm(cross(Vec3d{0, 0, 1}, upF));
         north = cross(upF, east);
     } else {
         // (no base: the landing sites of the missions there - only the tests start here, the screens offer the
@@ -3313,7 +3355,7 @@ int World::launchAircraft(const Craft& craft, int body) {
         for (const Site& s : SITES)
             if (b.name == s.body) { lat = s.lat * DEG; lon = s.lon * DEG; }
         upF = {std::cos(lat) * std::cos(lon), std::cos(lat) * std::sin(lon), std::sin(lat)};
-        east = norm(cross(Vec3d{0, 0, 1}, upF));
+        east = len(cross(Vec3d{0, 0, 1}, upF)) < 1e-9 ? Vec3d{0, 1, 0} : norm(cross(Vec3d{0, 0, 1}, upF));
         north = cross(upF, east);
     }
     v.ref = body;
@@ -3549,7 +3591,10 @@ void World::checkDocking() {
                     A.heat.push_back(k < b.heat.size() ? b.heat[k] : 0.0);
                 }
                 const Body& bd = U.bodies[A.ref];
+                double mergedCharge = A.charge + b.charge;
+                A.solarDeployed = A.solarDeployed || b.solarDeployed;
                 setupVessel(A, bd.atmTop > 0 && len(A.r) - bd.radius < bd.atmTop);
+                A.charge = clampd(mergedCharge, 0, A.chargeCap);
                 A.r = A.r + A.q.rotate(A.mp.com - oldCom);
                 A.v = vC;
                 A.w = A.invI * A.q.conj().rotate(LA + LB);
@@ -3587,10 +3632,6 @@ void World::checkDocking() {
 
 bool World::undock(Vessel& v, int port) {
     if (port < 0 || port >= (int)v.comps.size() || v.comps[port].func != Func::Docking || v.comps[port].dockedTo == 0) return false;
-    if (vessels.size() + 1 > vessels.capacity()) {
-        toast("Cannot undock now", {255, 170, 90, 255});
-        return false;
-    }
     int n = (int)v.comps.size();
     int partner = -1;
     for (int i = 0; i < n; i++)
@@ -3664,23 +3705,35 @@ bool World::undock(Vessel& v, int port) {
     nv.r = v.r + v.q.rotate(off);
     nv.v = v.v + v.q.rotate(cross(v.w, off)) + sepDir * 0.12; // (the latches' springs)
     nv.w = v.w;
-    nv.charge = v.charge * std::min(1.0, nv.chargeCap / std::max(v.chargeCap, 1e-9));
+    double share = v.chargeCap > 1e-9 ? clampd(nv.chargeCap / v.chargeCap, 0.0, 1.0) : 0.0;
+    nv.charge = clampd(v.charge * share, 0.0, nv.chargeCap);
+    double keepCharge = std::max(0.0, v.charge - nv.charge);
     nv.ignited = false;
     nv.sas = SAS::Stability;
     nv.rcs = v.rcs;
+    nv.solarDeployed = v.solarDeployed;
     nv.launchTime = t;
     nv.earthLaunch = v.earthLaunch; // (both parts keep what the joint vessel did)
     nv.cheated = v.cheated;
     nv.reachedSpace = v.reachedSpace;
     nv.landedOn = v.landedOn;
     nv.orbited = v.orbited;
-    auto it = moduleNames.find(leaveOrigin);
-    nv.name = it != moduleNames.end() ? it->second : v.name + " " + tr("module");
+    {
+        std::map<int, double> mo;
+        for (size_t i = 0; i < nv.comps.size() && i < nv.phys.size(); i++) mo[nv.comps[i].origin] += nv.phys[i].dryMass;
+        int best = leaveOrigin;
+        double bm = -1;
+        for (auto& e : mo)
+            if (e.second > bm) { bm = e.second; best = e.first; }
+        auto it = moduleNames.find(best);
+        nv.name = it != moduleNames.end() ? it->second : v.name + " " + tr("module");
+    }
     nv.id = nextId++;
     v.comps = keep;
     v.prop = kp;
     v.heat = kh;
     setupVessel(v, false);
+    v.charge = clampd(keepCharge, 0.0, v.chargeCap);
     followCoM(*this, v, oldCom, t);
     v.v = v.v - sepDir * 0.12 * nv.mp.mass / std::max(v.mp.mass, 1.0);
     {
@@ -3748,7 +3801,7 @@ bool World::releasePayload(Vessel& v) {
     if (v.bayComp < 0 || v.destroyed) return false;
     if (!inSpace(*this, v)) return say("The payload is released in space only");
     if (v.bayT < 0.999) return say("Open the payload bay doors first");
-    if (vessels.size() + 1 > vessels.capacity()) return say("Cannot release now");
+    size_t vi = (size_t)(&v - vessels.data());
     int n = (int)v.comps.size();
     std::vector<bool> leaves(n, false);
     int cnt = 0;
@@ -3805,7 +3858,9 @@ bool World::releasePayload(Vessel& v) {
     nv.r = v.r + v.q.rotate(off);
     nv.v = v.v + v.q.rotate(cross(v.w, off)) + sepDir * 0.3;
     nv.w = v.w;
-    nv.charge = nv.chargeCap;
+    double share = v.chargeCap > 1e-9 ? clampd(nv.chargeCap / v.chargeCap, 0.0, 1.0) : 1.0;
+    nv.charge = clampd(v.charge * share, 0.0, nv.chargeCap);
+    double keepCharge = std::max(0.0, v.charge - nv.charge);
     nv.ignited = false;
     nv.sas = nv.hasControl ? SAS::Stability : SAS::Off;
     nv.launchTime = t;
@@ -3822,11 +3877,12 @@ bool World::releasePayload(Vessel& v) {
     v.prop = kp;
     v.heat = kh;
     setupVessel(v, false);
+    v.charge = clampd(keepCharge, 0.0, v.chargeCap);
     followCoM(*this, v, oldCom, t);
     v.v = v.v - sepDir * 0.3 * nv.mp.mass / std::max(v.mp.mass, 1.0);
     std::string pn = nv.name;
     vessels.push_back(std::move(nv));
-    event(v, SimEvent::Stage);
+    if (vi < vessels.size()) event(vessels[vi], SimEvent::Stage);
     toast(trf("Payload released: {0}", pn), {150, 200, 255, 255});
     return true;
 }
@@ -3940,6 +3996,10 @@ bool World::capturePayload(Vessel& v) {
     }
     double mA = A.mp.mass, mB = b.mp.mass;
     Vec3d vC = (A.v * mA + b.v * mB) / (mA + mB);
+    Vec3d rC = (A.r * mA + b.r * mB) / (mA + mB);
+    Vec3d LA = A.q.rotate(A.mp.inertia * A.w) + cross(A.r - rC, (A.v - vC) * mA);
+    Vec3d LB = b.q.rotate(b.mp.inertia * b.w) + cross(b.r - rC, (b.v - vC) * mB);
+    double mergedCharge = A.charge + b.charge;
     int top = 0;
     for (Component& c : A.comps) {
         top = std::max(top, c.stage);
@@ -3964,8 +4024,10 @@ bool World::capturePayload(Vessel& v) {
     if (!moduleNames.count(A.id)) moduleNames[A.id] = A.name;
     const Body& bd = U.bodies[A.ref];
     setupVessel(A, bd.atmTop > 0 && len(A.r) - bd.radius < bd.atmTop);
+    A.charge = clampd(mergedCharge, 0, A.chargeCap);
     A.r = A.r + A.q.rotate(A.mp.com - oldCom);
     A.v = vC;
+    A.w = A.invI * A.q.conj().rotate(LA + LB);
     if (A.targetVessel == b.id) A.targetVessel = -1;
     b.destroyed = true;
     b.debris = true; // (no crash report, not drawn)
@@ -4189,12 +4251,11 @@ std::string World::serialize() const {
     f.precision(17);
     f << brand::tag("SAVE") << " 3\n";
     if (!mapName.empty()) {
-        std::string nm = mapName.substr(0, 120);
-        for (char& ch : nm)
-            if (ch == '\n' || ch == '\r') ch = ' ';
-        f << "mapname " << nm << "\n";
+        std::string nm = cleanLineText(mapName, 120);
+        if (!nm.empty()) f << "mapname " << nm << "\n";
     }
     f << "time " << t << "\n";
+    if (dockHoldUntil > t) f << "dockhold " << dockHoldUntil << "\n";
     f << "settings " << settings.infiniteFuel << " " << settings.hyperspace << " " << settings.hyperSpeed << " " << settings.launchSite << " "
       << settings.launchBase << "\n";
     f << "active " << activeOut << "\n";
@@ -4204,23 +4265,17 @@ std::string World::serialize() const {
     for (unsigned e : explored) f << " " << e;
     f << "\n";
     for (const auto& a : achievements) {
-        std::string nm = a.second.vessel.substr(0, 80);
-        for (char& ch : nm)
-            if (ch == '\n' || ch == '\r') ch = ' ';
+        std::string nm = cleanLineText(a.second.vessel, 80);
         f << "achieved " << a.first << " " << a.second.t << " " << nm << "\n";
     }
     for (const auto& m : moduleNames) {
-        std::string nm = m.second;
-        for (char& ch : nm)
-            if (ch == '\n' || ch == '\r') ch = ' ';
+        std::string nm = cleanLineText(m.second, 160);
         f << "modname " << m.first << " " << nm << "\n";
     }
     // surface bases: one "base" line, then its modules ("bmod" lines belong to the base above them)
     f << "nextbase " << nextBaseId << "\n";
     for (const SurfaceBase& b : bases) {
-        std::string nm = b.name.substr(0, 48);
-        for (char& ch : nm)
-            if (ch == '\n' || ch == '\r') ch = ' ';
+        std::string nm = cleanLineText(b.name, 48);
         f << "base " << b.id << " " << b.body << " " << b.lat << " " << b.lon << " " << b.founded << " " << nm << "\n";
         for (const BaseModule& m : b.modules)
             f << "bmod " << (int)m.kind << " " << m.x << " " << m.y << " " << m.heading << " " << m.kw << " " << m.variant << "\n";
@@ -4242,7 +4297,7 @@ std::string World::serialize() const {
         f << "land " << v.landPos.x << " " << v.landPos.y << " " << v.landPos.z << " " << v.landQ.w << " " << v.landQ.x << " " << v.landQ.y
           << " " << v.landQ.z << "\n";
         f << "view " << v.hidden << " " << v.showOrbit << "\n";
-        f << "mech " << v.flapStage << " " << v.flapPos << " " << v.bayOpen << " " << v.bayT << "\n";
+        f << "mech " << v.flapStage << " " << v.flapPos << " " << v.bayOpen << " " << v.bayT << " " << v.spool << "\n";
         f << "record " << v.earthLaunch << " " << v.cheated << " " << v.reachedSpace << " " << v.landedOn << " " << v.orbited << "\n";
         f << "props " << v.prop.size();
         for (double p : v.prop) f << " " << p;
@@ -4274,12 +4329,17 @@ bool World::deserialize(const std::string& text) {
     std::vector<double> props, heats;
     int lines = 0, activeId = -1;
     bool complete = false, baseOpen = false;
-    while (std::getline(f, line) && lines++ < 400000) {
+    std::set<int> seenIds;
+    while (std::getline(f, line) && lines++ < 4000000) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         std::istringstream ls(line);
         std::string key;
         ls >> key;
         if (key == "time") { ls >> w.t; if (!std::isfinite(w.t)) return false; }
+        else if (key == "dockhold") {
+            double dh = 0;
+            if (ls >> dh && std::isfinite(dh)) w.dockHoldUntil = dh;
+        }
         else if (key == "settings") {
             int a = 0, b = 1, c = 1, d = 0, e = 0;
             ls >> a >> b >> c >> d;
@@ -4296,7 +4356,7 @@ bool World::deserialize(const std::string& text) {
             std::string nm;
             std::getline(ls, nm);
             size_t a = nm.find_first_not_of(' ');
-            w.mapName = a == std::string::npos ? std::string() : nm.substr(a, 120);
+            w.mapName = a == std::string::npos ? std::string() : cleanLineText(nm.substr(a), 120);
         }
         else if (key == "modname") {
             // the names of docked modules (given back on undocking)
@@ -4305,7 +4365,7 @@ bool World::deserialize(const std::string& text) {
             if (ls >> id && id >= 0 && w.moduleNames.size() < 4096) {
                 std::getline(ls, nm);
                 size_t a = nm.find_first_not_of(' ');
-                nm = a == std::string::npos ? std::string() : nm.substr(a, 160);
+                nm = a == std::string::npos ? std::string() : cleanLineText(nm.substr(a), 160);
                 if (!nm.empty()) w.moduleNames[id] = nm;
             }
         }
@@ -4321,7 +4381,8 @@ bool World::deserialize(const std::string& text) {
                 std::string nm;
                 std::getline(ls, nm);
                 size_t a = nm.find_first_not_of(' ');
-                b.name = a == std::string::npos ? defaultBaseName(w, b.body) : nm.substr(a, 48);
+                b.name = a == std::string::npos ? defaultBaseName(w, b.body) : cleanLineText(nm.substr(a), 48);
+                if (b.name.empty()) b.name = defaultBaseName(w, b.body);
                 w.bases.push_back(b);
                 baseOpen = true;
             } else baseOpen = false; // (its modules are skipped too)
@@ -4346,7 +4407,7 @@ bool World::deserialize(const std::string& text) {
                 for (char ch : id) okId &= (std::isalnum((unsigned char)ch) || ch == '_' || ch == ':' || ch == '-');
                 std::getline(ls, nm);
                 size_t a = nm.find_first_not_of(' ');
-                nm = a == std::string::npos ? std::string() : nm.substr(a, 80);
+                nm = a == std::string::npos ? std::string() : cleanLineText(nm.substr(a), 80);
                 if (okId) w.achievements[id] = {at, nm};
             }
         }
@@ -4385,8 +4446,9 @@ bool World::deserialize(const std::string& text) {
             if (!(ls >> cur.w.x >> cur.w.y >> cur.w.z)) cur.w = {};
         } else if (key == "flags" && inVessel) {
             int sas = 0;
-            ls >> cur.landed >> cur.ignited >> cur.chuteDeployed >> cur.chuteCut >> cur.sailDeployed >> cur.legsDeployed >> sas >> cur.target >>
-                cur.throttle >> cur.charge >> cur.launchTime;
+            if (!(ls >> cur.landed >> cur.ignited >> cur.chuteDeployed >> cur.chuteCut >> cur.sailDeployed >> cur.legsDeployed >> sas >> cur.target >>
+                  cur.throttle >> cur.charge >> cur.launchTime))
+                continue;
             if (!(ls >> cur.solarDeployed)) cur.solarDeployed = true; // older saves: panels were always open
             if (!(ls >> cur.rcs)) cur.rcs = false;
             if (!(ls >> cur.chuteOpen) || !std::isfinite(cur.chuteOpen)) cur.chuteOpen = cur.chuteDeployed && !cur.chuteCut ? 1 : 0;
@@ -4400,12 +4462,13 @@ bool World::deserialize(const std::string& text) {
             cur.sas = (SAS)std::clamp(sas, 0, (int)SAS::COUNT - 1);
         } else if (key == "mech" && inVessel) {
             int fs = 0, bo = 0;
-            double fp = 0, bt = 0;
+            double fp = 0, bt = 0, sp = 0;
             if (ls >> fs >> fp >> bo >> bt) {
                 cur.flapStage = std::clamp(fs, 0, FLAP_STAGES);
                 cur.flapPos = std::isfinite(fp) ? clampd(fp, 0, FLAP_STAGES) : 0;
                 cur.bayOpen = bo != 0;
                 cur.bayT = std::isfinite(bt) ? clampd(bt, 0, 1) : 0;
+                if (ls >> sp && std::isfinite(sp)) cur.spool = clampd(sp, 0, 1);
             }
         } else if (key == "land" && inVessel) {
             ls >> cur.landPos.x >> cur.landPos.y >> cur.landPos.z >> cur.landQ.w >> cur.landQ.x >> cur.landQ.y >> cur.landQ.z;
@@ -4415,7 +4478,8 @@ bool World::deserialize(const std::string& text) {
             n = std::min<size_t>(n, 4800);
             auto& dst = key == "props" ? props : heats;
             dst.assign(n, 0);
-            for (size_t i = 0; i < n; i++) ls >> dst[i];
+            for (size_t i = 0; i < n; i++)
+                if (!(ls >> dst[i])) dst[i] = 0;
         } else if (key == "endvessel" && inVessel) {
             inVessel = false;
             Craft c;
@@ -4432,6 +4496,10 @@ bool World::deserialize(const std::string& text) {
                             cur.charge, cur.throttle, cur.launchTime, cur.landPos.x, cur.landPos.y, cur.landPos.z, cur.landQ.w, cur.landQ.x,
                             cur.landQ.y, cur.landQ.z}))
                 continue;
+            double rl = len(cur.r), ll = len(cur.landPos);
+            if (!(rl > 1e-3 && rl < 1e20) || (cur.landed && !(ll > 1e-3 && ll < 1e20))) continue;
+            if (cur.id <= 0 || seenIds.count(cur.id)) cur.id = ++w.nextId;
+            seenIds.insert(cur.id);
             cur.name = c.name;
             cur.comps = expandCraft(c);
             if (cur.comps.empty()) continue;
@@ -4463,7 +4531,9 @@ bool World::deserialize(const std::string& text) {
     // only the vessel flown has its throttle up (older saves kept it on vessels left behind by a launch)
     for (int i = 0; i < (int)w.vessels.size(); i++)
         if (i != w.active) w.vessels[i].throttle = 0;
-    w.nextId = std::clamp(w.nextId, (int)w.vessels.size() + 1, 1 << 24);
+    int minNext = (int)w.vessels.size() + 1;
+    for (const Vessel& v : w.vessels) minNext = std::max(minNext, v.id + 1);
+    w.nextId = std::clamp(w.nextId, minNext, 1 << 24);
     for (const SurfaceBase& b : w.bases) w.nextBaseId = std::max(w.nextBaseId, b.id + 1);
     w.repairExplored();
     w.vessels.reserve(w.vessels.size() + 64);
@@ -4471,6 +4541,8 @@ bool World::deserialize(const std::string& text) {
     w.refreshStates();
     w.missionLog = std::move(missionLog); // the mission log belongs to the session, not to the save
     *this = std::move(w);
+    mission::invalidate();
+    navg::invalidate();
     syncBaseTerrain();
     return true;
 }

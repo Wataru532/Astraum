@@ -1,11 +1,16 @@
 // Files of the game: saved worlds (maps), stacked designs (.sfd) and free-form crafts (.sfc). The domain turns
 // them into text and back; this is where the text meets the disk (UTF-8 paths, size limits, atomic writes).
 #pragma once
+#include <filesystem>
 #include <string>
 
 struct World;
 struct Design;
 struct Craft;
+
+// UTF-8 string <-> filesystem::path without depending on the process ANSI code page
+std::filesystem::path pathFromUtf8(const std::string& utf8);
+std::string pathToUtf8(const std::filesystem::path& p);
 
 // writes `text` through a temporary file and a rename: an interrupted write never destroys the old file
 bool writeFileAtomic(const std::string& path, const std::string& text);

@@ -158,11 +158,16 @@ void loadMapModal(App& app) {
             ensureGlyphs(g_list[i].name);
             if (g_list[i].path == app.mapPath) g_loadSel = i;
             std::string tp = thumbPath(g_list[i].path);
-            if (FileExists(tp.c_str())) {
-                Texture2D t = LoadTexture(tp.c_str());
-                if (t.id) {
-                    SetTextureFilter(t, TEXTURE_FILTER_BILINEAR);
-                    g_thumbTex[g_list[i].path] = t;
+            std::string png;
+            if (readFileLimited(tp, png, 16u << 20) && !png.empty()) {
+                Image im = LoadImageFromMemory(".png", (const unsigned char*)png.data(), (int)png.size());
+                if (im.data) {
+                    Texture2D t = LoadTextureFromImage(im);
+                    UnloadImage(im);
+                    if (t.id) {
+                        SetTextureFilter(t, TEXTURE_FILTER_BILINEAR);
+                        g_thumbTex[g_list[i].path] = t;
+                    }
                 }
             }
         }
@@ -219,7 +224,7 @@ void loadMapModal(App& app) {
             if (g_renaming && i == g_loadSel) {
                 textInput({tx, row.y + 10, tw, 32}, g_renameBuf, 90, 7303);
                 if (IsKeyPressed(KEY_ESCAPE)) g_renaming = false;
-            } else text(fit(m.name, tw, 16, true), tx, row.y + 16, 16, col::text, true);
+            } else textRaw(fitRaw(m.name, tw, 16, true), tx, row.y + 16, 16, col::text, true);
             text(trf("Saved {0}  ·  {1} vessels", localTimeText(m.savedAt), std::to_string(m.vessels)), tx, row.y + 48, 13, col::dim);
             if (m.path == app.mapPath && app.gameStarted) textR(tr("current"), row.x + row.width - 14, row.y + 33, 13, col::accent, true);
         }
@@ -234,6 +239,8 @@ void loadMapModal(App& app) {
             g_list = listMaps(app);
             g_loadSel = g_list.empty() ? -1 : 0;
             g_deleteArmed = false;
+            g_renaming = false;
+            cancelEdit();
         }
     }
     // rename: the selected map's name becomes a text field; Enter or the button again applies it
@@ -242,14 +249,13 @@ void loadMapModal(App& app) {
         if (!g_renaming) {
             g_renaming = true;
             g_renameBuf = g_list[g_loadSel].name;
-            ui::testTextInput(7303, {}, {}, false, false); // (the field takes the focus at once)
+            ui::focusText(7303, g_renameBuf); // (the field takes focus with the caret at the end)
         } else doRename = true;
     }
     if (g_renaming && sel && (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER))) doRename = true;
     if (doRename && sel) {
         if (!trimmed(g_renameBuf).empty() && renameMap(app, g_list[g_loadSel].path, g_renameBuf)) {
-            std::string path = g_list[g_loadSel].path;
-            g_list[g_loadSel].name = trimmed(g_renameBuf).substr(0, 120);
+            g_list[g_loadSel].name = cleanLineText(trimmed(g_renameBuf), 120);
             ensureGlyphs(g_list[g_loadSel].name);
         }
         g_renaming = false;

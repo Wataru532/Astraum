@@ -360,10 +360,12 @@ struct Worker {
     std::condition_variable cv;
     std::deque<Job> jobs;
     std::deque<Res> done;
+    std::vector<unsigned> liveGen;
     std::thread th;
     bool stop = false;
     void start() {
         if (th.joinable()) return;
+        stop = false;
         th = std::thread([this] {
             for (;;) {
                 Job j;
@@ -373,6 +375,7 @@ struct Worker {
                     if (stop) return;
                     j = jobs.front();
                     jobs.pop_front();
+                    if (j.body < 0 || j.body >= (int)liveGen.size() || j.gen != liveGen[j.body]) continue;
                 }
                 Res r{j.body, j.key, j.color, false, j.gen, {}, {}};
                 const DetState& st = g_det[j.body];
@@ -381,18 +384,31 @@ struct Worker {
                     r.ok = j.color ? decodeColorTile(s, j.key, r.rgb) : decodeHeightTile(s, j.key, r.h);
                 }
                 std::lock_guard<std::mutex> lk(mx);
-                done.push_back(std::move(r));
+                if (!stop && j.body >= 0 && j.body < (int)liveGen.size() && j.gen == liveGen[j.body])
+                    done.push_back(std::move(r));
             }
         });
     }
-    ~Worker() {
+    void setBodyGen(int body, unsigned gen) {
+        std::lock_guard<std::mutex> lk(mx);
+        if (body >= (int)liveGen.size()) liveGen.resize((size_t)body + 1, 0);
+        liveGen[body] = gen;
+        jobs.erase(std::remove_if(jobs.begin(), jobs.end(), [body, gen](const Job& j) { return j.body == body && j.gen != gen; }), jobs.end());
+        done.erase(std::remove_if(done.begin(), done.end(), [body, gen](const Res& r) { return r.body == body && r.gen != gen; }), done.end());
+    }
+    void shutdown() {
+        std::thread old;
         {
             std::lock_guard<std::mutex> lk(mx);
             stop = true;
+            jobs.clear();
+            done.clear();
+            old = std::move(th);
         }
         cv.notify_all();
-        if (th.joinable()) th.join();
+        if (old.joinable()) old.join();
     }
+    ~Worker() { shutdown(); }
 };
 Worker g_worker;
 
@@ -441,6 +457,7 @@ void dropWindow(DetState& st) {
     }
     st.active = false;
     st.gen++;
+    if (!g_det.empty()) g_worker.setBodyGen((int)(&st - g_det.data()), st.gen);
     st.queuedH.clear();
     st.queuedC.clear();
     st.deliveredC.clear();
@@ -451,9 +468,11 @@ void dropWindow(DetState& st) {
 // place the window so that tile position (fx, fy) lies near its middle; keep the tiles it still covers
 void placeWindow(DetState& st, double fx, double fy) {
     const HiSrc& s = g_hi[st.src];
+    int body = (int)(&st - g_det.data());
     st.d.tx0 = (((int)std::floor(fx + 0.5) - DET_WIN / 2) % DET_GW + DET_GW) % DET_GW;
     st.d.ty0 = std::clamp((int)std::floor(fy + 0.5) - DET_WIN / 2, 0, DET_GH - DET_WIN);
     st.gen++;
+    g_worker.setBodyGen(body, st.gen);
     for (Slot& sl : st.slots)
         if (sl.key >= 0 && !inWindow(st.d, sl.key)) {
             sl.key = -1;
@@ -465,6 +484,14 @@ void placeWindow(DetState& st, double fx, double fy) {
     st.queuedC.clear();
     st.colorOut.clear();
     st.heightOut.clear();
+    // the elevation right around the vessel is decoded synchronously below: skip queueing those height tiles
+    int cx = (int)std::floor(fx), cy = (int)std::floor(fy);
+    auto isSyncCenter = [&](int key) {
+        int tx = key % DET_GW, ty = key / DET_GW;
+        int dx = ((tx - cx) % DET_GW + DET_GW) % DET_GW;
+        if (dx > DET_GW / 2) dx -= DET_GW;
+        return std::abs(dx) <= 1 && std::abs(ty - cy) <= 1;
+    };
     // the tiles nearest the middle first
     std::vector<std::pair<double, int>> order;
     for (int j = 0; j < DET_WIN; j++)
@@ -477,13 +504,15 @@ void placeWindow(DetState& st, double fx, double fy) {
     for (auto& o : order) {
         int key = o.second;
         if (s.height.data && st.slots[slotOf(key)].key != key) {
-            st.queuedH.insert(key);
-            queueJob((int)(&st - g_det.data()), key, false, st.gen);
+            if (!isSyncCenter(key)) {
+                st.queuedH.insert(key);
+                queueJob(body, key, false, st.gen);
+            }
         } else if (st.slots[slotOf(key)].key == key)
             st.heightOut.push_back(key); // (still there: the renderer keeps or re-uploads it)
         if (s.color.data && !st.deliveredC.count(key)) {
             st.queuedC.insert(key);
-            queueJob((int)(&st - g_det.data()), key, true, st.gen);
+            queueJob(body, key, true, st.gen);
         }
     }
     st.active = true;
@@ -662,10 +691,15 @@ void init(const Universe& U) {
         } else g_color[body].assign((const unsigned char*)cd, (const unsigned char*)cd + cs);
     }
     // the high-resolution tiles (resource ids: colour 211 + 2 i, elevation 212 + 2 i)
+    g_worker.shutdown();
     g_hi.clear();
     for (auto& st : g_det) dropWindow(st);
     g_det.clear();
     g_det.resize(U.count());
+    {
+        std::lock_guard<std::mutex> lk(g_worker.mx);
+        g_worker.liveGen.assign(U.count(), 0);
+    }
     for (int i = 0; i < 3; i++) {
         int body = U.find(SOURCES[i].body);
         if (body < 0 || g_byBody[body] < 0) continue;
@@ -680,6 +714,11 @@ void init(const Universe& U) {
         g_det[body].src = (int)g_hi.size();
         g_hi.push_back(h);
     }
+}
+
+void shutdown() {
+    g_worker.shutdown();
+    for (auto& st : g_det) dropWindow(st);
 }
 
 bool realColor(int body) { return body >= 0 && body < (int)g_color.size() && !g_color[body].empty(); }

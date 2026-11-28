@@ -351,11 +351,13 @@ void cycleNightVision(World& W) {
     W.toast(nightVision == 0 ? "Night vision off" : nightVision == 1 ? "Night vision: image intensifier" : "Night vision: bright (natural colours)",
             Color{150, 255, 170, 255});
 }
-void nvBegin() {
+bool nvBegin() {
     int w = GetRenderWidth(), h = GetRenderHeight();
+    if (w <= 0 || h <= 0) return false;
     if (nvTarget.id == 0 || nvTarget.texture.width != w || nvTarget.texture.height != h) {
         if (nvTarget.id) UnloadRenderTexture(nvTarget);
         nvTarget = loadHalfFloatTarget(w, h);
+        if (nvTarget.id == 0) return false;
         SetTextureFilter(nvTarget.texture, TEXTURE_FILTER_TRILINEAR);
     }
     if (nvShader.id == 0) {
@@ -370,12 +372,16 @@ void nvBegin() {
     }
     BeginTextureMode(nvTarget);
     rlScalef(ui::scale(), ui::scale(), 1.0f); // the 2D labels inside the 3D view are in UI units
+    return true;
 }
 
 void nvEnd() {
     EndTextureMode();
     ui::beginFrameScale(); // EndTextureMode reset the UI scale
+    // suppress per-frame INFO spam from rlGenTextureMipmaps so the crash log ring buffer stays useful
+    SetTraceLogLevel(LOG_WARNING);
     GenTextureMipmaps(&nvTarget.texture);
+    SetTraceLogLevel(LOG_INFO);
     SetTextureFilter(nvTarget.texture, TEXTURE_FILTER_TRILINEAR);
     Vector2 r{(float)nvTarget.texture.width, (float)nvTarget.texture.height};
     float tm = (float)std::fmod(GetTime(), 1000.0);
@@ -758,6 +764,7 @@ void renderFlight(App& app, Vessel& av) {
                         hAbove = dot(rel - g0, u);
                     }
                 }
+                if (sunUp < 0.03) continue;
                 double Lv = std::max(1.0, v.length);
                 if (hAbove > Lv * 2 + 1500 || hAbove < -Lv) continue;
                 // the axis of the vessel from its lowest contact point to its top, projected along the sunlight
@@ -844,8 +851,10 @@ void renderFlight(App& app, Vessel& av) {
             double sunAng = star >= 0 && star != ref ? 2 * U.bodies[star].radius / std::max(len(U.relPos(S, star, ref) - av.r), 1.0) : 0.0093;
             if (gfx::beginShadowPass(shMapC, toSun, shMapR, back, ahead)) {
                 drawScene(true);
-                gfx::endShadowPass(nightVision ? nvTarget.id : 0, nightVision ? nvTarget.texture.width : GetRenderWidth(),
-                                   nightVision ? nvTarget.texture.height : GetRenderHeight(), sunAng);
+                bool useNv = nightVision != 0 && nvTarget.id != 0;
+                int pw = useNv ? nvTarget.texture.width : GetRenderWidth();
+                int ph = useNv ? nvTarget.texture.height : GetRenderHeight();
+                gfx::endShadowPass(useNv ? nvTarget.id : 0, std::max(1, pw), std::max(1, ph), sunAng);
             } else shMapR = 0;
         }
     }
@@ -2318,7 +2327,7 @@ void drawHUD(App& app, Vessel& av) {
         } else {
             Mat3d R = U.bodyRot(av.ref, W.t);
             Vec3d f = norm(R.T() * av.r);
-            kv("Latitude", fmt("%.3f°", std::asin(f.z) / DEG));
+            kv("Latitude", fmt("%.3f°", std::asin(clampd(f.z, -1.0, 1.0)) / DEG));
             kv("Longitude", fmt("%.3f°", std::atan2(f.y, f.x) / DEG));
             kv("Surface gravity", fmt("%.2f m/s²", surfaceGravity(rb)));
         }
@@ -2546,7 +2555,7 @@ void drawHUD(App& app, Vessel& av) {
         const float leftW = col2 ? 278.0f : 170.0f, rightW = 260.0f;
         Vector2 nc{SW / 2, SH - nbR - 22};
         {
-            const float toolbarRight = 12 + 10 * 46 + 16 + 10;   // the bottom-left toolbar and a gap
+            const float toolbarRight = 12 + 11 * 46 + 16 + 10;   // the bottom-left toolbar and a gap
             const float cubeLeft = SW - 250;                     // the view cube, bottom right
             float need = toolbarRight - (nc.x - nbR - leftW), room = cubeLeft - (nc.x + nbR + rightW);
             if (need > 0 && room > 0) nc.x += std::min(need, room);
@@ -2721,8 +2730,9 @@ void bodyInfoPanel(App& app, Vessel* av) {
     World& W = app.world;
     const Universe& U = W.U;
     const Body& b = U.bodies[selBody];
-    float SW = ui::SW();
-    Rectangle r{SW - 352, 260, 340, 460};
+    float SW = ui::SW(), SH = ui::SH();
+    float h = std::min(460.0f, std::max(280.0f, SH - 290.0f));
+    Rectangle r{SW - 352, 278, 340, h};
     panel(r);
     text(b.name, r.x + 16, r.y + 12, 20, col::text, true);
     if (iconButton({r.x + r.width - 40, r.y + 10, 28, 28}, Icon::Close)) { selBody = -1; return; }
@@ -3157,7 +3167,10 @@ void vesselsModal(App& app) {
                 listRename = -1;
                 ui::cancelEdit();
             }
-        } else text(fit(v.name, row.width - 470, 16, true), row.x + 14, row.y + 8, 16, v.hidden ? col::dim : col::text, true);
+        } else {
+            ensureGlyphs(v.name);
+            textRaw(fitRaw(v.name, row.width - 470, 16, true), row.x + 14, row.y + 8, 16, v.hidden ? col::dim : col::text, true);
+        }
         if (iconButton({row.x + row.width - 456, row.y + 12, 34, 32}, listRename == v.id ? Icon::Check : Icon::Pencil, listRename == v.id,
                        listRename == v.id ? "Keep the new name (Enter)" : "Rename")) {
             if (listRename == v.id) {
@@ -3195,8 +3208,11 @@ void vesselsModal(App& app) {
         for (Vessel& o : W.vessels)
             if (o.targetVessel == W.vessels[del].id) o.targetVessel = -1;
         W.vessels.erase(W.vessels.begin() + del);
-        if (W.active == del) W.active = W.vessels.empty() ? -1 : 0;
-        else if (W.active > del) W.active--;
+        if (W.active == del) {
+            W.active = -1;
+            for (int i = 0; i < (int)W.vessels.size(); i++)
+                if (!W.vessels[i].destroyed) { W.active = i; break; }
+        } else if (W.active > del) W.active--;
     }
 }
 
@@ -3556,7 +3572,10 @@ void flightFrame(App& app) {
         if (keys::pressed(A::WarpSlower)) W.setWarp(W.warpIndex - 1);
         if (keys::pressed(A::WarpStop)) W.setWarp(0);
         if (keys::pressed(A::FocusVessel)) mapFocus = -1;
-        if (keys::pressed(A::QuickSave)) W.toast(quickSave(app) ? "Quicksaved" : "Quicksave failed", col::good);
+        if (keys::pressed(A::QuickSave)) {
+            bool ok = quickSave(app);
+            W.toast(ok ? "Quicksaved" : "Quicksave failed", ok ? col::good : col::bad);
+        }
         if (keys::pressed(A::QuickLoad)) {
             if ((finishSaves(), loadWorld(W, app.saveFile))) {
                 if (!app.mapPath.empty()) markMapSaved(app); // (the world is the saved one again)
@@ -3635,8 +3654,7 @@ void flightFrame(App& app) {
     // ---------------- draw
     // night vision in the flight view and on the map alike (the map's night sides lifted in the bright mode)
     gfx::setNightLift(nightVision == 2 ? 0.45f : 0.f);
-    if (nightVision) {
-        nvBegin();
+    if (nightVision && nvBegin()) {
         if (mapMode) renderMap(app, av);
         else renderFlight(app, *av);
         nvEnd();
@@ -3726,7 +3744,10 @@ void flightFrame(App& app) {
             cycleNightVision(W);
         }
         bx += 46;
-        if (iconButton({bx, tb.y + 8, 38, 36}, Icon::Save, false, keys::tip("Quicksave", A::QuickSave).c_str())) W.toast(quickSave(app) ? "Quicksaved" : "Quicksave failed", col::good);
+        if (iconButton({bx, tb.y + 8, 38, 36}, Icon::Save, false, keys::tip("Quicksave", A::QuickSave).c_str())) {
+            bool ok = quickSave(app);
+            W.toast(ok ? "Quicksaved" : "Quicksave failed", ok ? col::good : col::bad);
+        }
         bx += 46;
         if (iconButton({bx, tb.y + 8, 38, 36}, Icon::Gear, pauseOpen, "Menu (Esc)")) pauseOpen = true;
         {
@@ -3852,7 +3873,10 @@ void flightFrame(App& app) {
             pauseOpen = false;
             achOpen = true;
         }
-        if (item("Save game", Icon::Save)) W.toast(quickSave(app) ? "Game saved" : "Save failed", col::good);
+        if (item("Save game", Icon::Save)) {
+            bool ok = quickSave(app);
+            W.toast(ok ? "Game saved" : "Save failed", ok ? col::good : col::bad);
+        }
         if (item("Load game", Icon::Folder)) {
             if ((finishSaves(), loadWorld(W, app.saveFile))) {
                 if (!app.mapPath.empty()) markMapSaved(app);
@@ -3869,4 +3893,10 @@ void flightFrame(App& app) {
     ui::setInputBlocked(false);
     if (app.settingsOpen) settingsModal(app);
     gputime::mark("hud");
+}
+
+void flightShutdown() {
+    if (nvTarget.id) { UnloadRenderTexture(nvTarget); nvTarget = {}; }
+    if (nvShader.id && nvShader.id != rlGetShaderIdDefault()) { UnloadShader(nvShader); nvShader = {}; }
+    if (nvbShader.id && nvbShader.id != rlGetShaderIdDefault()) { UnloadShader(nvbShader); nvbShader = {}; }
 }

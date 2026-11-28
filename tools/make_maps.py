@@ -1,6 +1,6 @@
 """Builds the surface maps embedded in Astraum (assets/maps) from public-domain NASA / USGS data.
 
-Usage:  python -I tools/make_maps.py <source-dir> <out-dir> [--check]
+Usage:  python -I tools/make_maps.py <source-dir> <out-dir>
 
 Sources (all public domain, see assets/maps/SOURCES.txt):
   earth_color.jpg   NASA Blue Marble "Land_ocean_ice_2048.jpg" (Wikimedia Commons)
@@ -25,6 +25,7 @@ Image.MAX_IMAGE_PIXELS = None  # the Mars mosaic is 228 Mpx (read in DCT draft m
 
 
 def save_height(path, h):
+    h = np.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
     code = np.clip(np.round((h - H_OFS) / H_STEP), 0, 65535).astype(np.uint16)
     rgb = np.zeros(code.shape + (3,), np.uint8)
     rgb[..., 0] = code >> 8
@@ -77,8 +78,13 @@ def main():
     # orientation check: the dark maria lie low (brightness and height correlate on the near side)
     bright = np.asarray(mc.convert("L").resize((ml.shape[1], ml.shape[0]), Image.BOX), np.float32)
     def corr(a, b):
-        a = a - a.mean(); b = b - b.mean()
-        return float((a * b).sum() / np.sqrt((a * a).sum() * (b * b).sum()))
+        mask = np.isfinite(a) & np.isfinite(b)
+        if not mask.any():
+            return 0.0
+        aa = a[mask] - a[mask].mean()
+        bb = b[mask] - b[mask].mean()
+        denom = float(np.sqrt((aa * aa).sum() * (bb * bb).sum()))
+        return float((aa * bb).sum() / denom) if denom > 0 else 0.0
     c0, c1 = corr(bright, ml), corr(bright, np.roll(ml, ml.shape[1] // 2, axis=1))
     if c1 > c0:
         ml = np.roll(ml, ml.shape[1] // 2, axis=1)

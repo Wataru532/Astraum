@@ -3,6 +3,8 @@
 #include <filesystem>
 
 namespace winshell {
+// the user's Roaming AppData folder (Unicode-safe via SHGetKnownFolderPath); empty if unavailable
+std::filesystem::path appDataDir();
 // the user's Pictures folder (follows OneDrive / folder redirection); empty if unavailable
 std::filesystem::path picturesDir();
 // open a folder in Explorer (only existing directories are opened)

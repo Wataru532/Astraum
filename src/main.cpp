@@ -29,6 +29,7 @@
 #include "platform.hpp"
 #include "diag.hpp"
 #include "ground.hpp"
+#include "navguide.hpp"
 #include "ports.hpp"
 
 using namespace ui;
@@ -41,8 +42,15 @@ Image makeIcon() {
 } // namespace
 
 
+#ifndef ASTRAUM_NO_TESTS
 bool autotestInit(App& app, int argc, char** argv);
 bool autotestStep(App& app);
+int autotestExitCode();
+#else
+inline bool autotestInit(App&, int, char**) { return false; }
+inline bool autotestStep(App&) { return false; }
+inline int autotestExitCode() { return 0; }
+#endif
 
 // frame-rate limit for the current situation (0 = no limit beyond VSync)
 int frameLimit(const App& app, bool testing) {
@@ -101,8 +109,13 @@ void fpsOverlay(const App& app) {
     float gpu = gpumon::utilization();
     char b[160];
     int n = std::snprintf(b, sizeof b, "%d FPS  ·  %.1f ms (max %.1f)", fps, ft * 1000, ftMax * 1000);
-    if (gpu >= 0) n += std::snprintf(b + n, sizeof b - n, "  ·  GPU %.0f%%", gpu);
-    if (gfx::planetDetail() < 16) std::snprintf(b + n, sizeof b - n, "  ·  %s %d/16", tr("detail").c_str(), gfx::planetDetail());
+    size_t pos = n > 0 ? std::min((size_t)n, sizeof(b) - 1) : 0;
+    if (gpu >= 0 && pos < sizeof(b) - 1) {
+        int k = std::snprintf(b + pos, sizeof(b) - pos, "  ·  GPU %.0f%%", gpu);
+        if (k > 0) pos = std::min(pos + (size_t)k, sizeof(b) - 1);
+    }
+    if (gfx::planetDetail() < 16 && pos < sizeof(b) - 1)
+        std::snprintf(b + pos, sizeof(b) - pos, "  ·  %s %d/16", tr("detail").c_str(), gfx::planetDetail());
     float SW = ui::SW(), SH = ui::SH();
     Vector2 m = measure(b, 13, true);
     float w = m.x + 20, h = 24, x, y;
@@ -128,30 +141,52 @@ void traceLog(int level, const char* fmt, va_list ap) {
 }
 
 // the first start after the rename: the data of the earlier name (maps, designs, settings, keys) is copied into the
-// new folder; the old folder stays as it is (nothing is moved or deleted)
-void migrateDataFolder(const char* appData) {
+// new folder; the old folder stays as it is (nothing is moved or deleted). Old crash reports are intentionally skipped.
+void migrateDataFolder(const std::filesystem::path& appData) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    fs::path to = fs::path(appData) / brand::DATA_FOLDER, from = fs::path(appData) / brand::LEGACY_FOLDER;
-    if (fs::exists(to, ec) || !fs::is_directory(from, ec)) return;
-    fs::create_directories(to, ec);
-    fs::copy(from, to, fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
+    fs::path to = appData / brand::DATA_FOLDER, from = appData / brand::LEGACY_FOLDER;
+    if (appData.empty() || fs::exists(to, ec) || !fs::is_directory(from, ec)) return;
+    fs::path staging = appData / (std::string(brand::DATA_FOLDER) + ".migrating");
+    fs::remove_all(staging, ec);
+    fs::create_directories(staging, ec);
+    if (ec) return;
+    bool ok = true;
+    for (fs::directory_iterator it(from, ec), end; !ec && it != end; it.increment(ec)) {
+        fs::path name = it->path().filename();
+        if (name == L"crash") continue; // never import stale crash reports / pending markers from the old name
+        std::error_code ce;
+        fs::copy(it->path(), staging / name, fs::copy_options::recursive | fs::copy_options::skip_existing, ce);
+        if (ce) ok = false;
+    }
+    if (!ec && ok) {
+        fs::rename(staging, to, ec);
+        if (ec) fs::remove_all(staging, ec);
+    } else {
+        fs::remove_all(staging, ec);
+    }
 }
 
 int main(int argc, char** argv) {
     {
-        const char* ad = std::getenv("APPDATA");
-        if (ad) migrateDataFolder(ad);
-        std::string base = ad ? std::string(ad) + "\\" + brand::DATA_FOLDER : std::string(brand::DATA_FOLDER) + "Data";
+        namespace fs = std::filesystem;
+        fs::path adPath = winshell::appDataDir();
+        if (adPath.empty()) {
+            if (const char* ad = std::getenv("APPDATA"); ad && ad[0]) adPath = pathFromUtf8(ad);
+        }
+        if (!adPath.empty()) migrateDataFolder(adPath);
+        fs::path basePath = adPath.empty() ? fs::path(std::string(brand::DATA_FOLDER) + "Data") : (adPath / brand::DATA_FOLDER);
         std::error_code ec;
-        std::filesystem::create_directories(base, ec);
-        crash::init(base + "\\crash", APP_VERSION);
+        fs::create_directories(basePath, ec);
+        crash::init(pathToUtf8(basePath / "crash"), APP_VERSION);
     }
     bool crashTest = false, noBake = false, paced = false;
+#ifndef ASTRAUM_NO_TESTS
     for (int i = 1; i < argc; i++)
         if (std::strcmp(argv[i], "--crashtest") == 0) crashTest = true;
         else if (std::strcmp(argv[i], "--nobake") == 0) noBake = true;
         else if (std::strcmp(argv[i], "--paced") == 0) paced = true; // automated runs with the normal frame pacing
+#endif
     crash::breadcrumb("start");
     SetTraceLogCallback(traceLog);
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
@@ -184,6 +219,7 @@ int main(int argc, char** argv) {
         ports::Platform pf;
         pf.now = []() { return GetTime(); };
         pf.systemLanguage = platform::systemLanguage;
+        pf.appDataDir = []() { return pathToUtf8(winshell::appDataDir()); };
         pf.log = [](const char* line) { TraceLog(LOG_INFO, "%s", line); };
         ports::install(pf);
         ports::Presentation pr;
@@ -205,14 +241,19 @@ int main(int argc, char** argv) {
     ui::setTextScale(TEXT_SCALES[app.textSize]);
     ui::setUserScale(UI_SIZES[std::clamp(app.uiSize, 0, 5)]);
     nav::setReverseZoom(app.reverseZoom);
+#ifndef ASTRAUM_NO_TESTS
     for (int i = 1; i + 1 < argc; i++)
         if (std::strcmp(argv[i], "--sfxdump") == 0) {
             std::error_code ec;
-            std::filesystem::create_directories(argv[i + 1], ec);
+            std::filesystem::create_directories(pathFromUtf8(argv[i + 1]), ec);
             int rc = sfx::dump(argv[i + 1]) ? 0 : 1;
+            ui::shutdown();
+            gfx::shutdown();
+            SetTraceLogCallback(nullptr);
             CloseWindow();
             return rc;
         }
+#endif
     bool soundOk = sfx::init();
     crash::breadcrumb("audio: %s", soundOk ? "ok" : "no device");
     sfx::setVolume(std::clamp(app.volumePct, 0, 100) / 100.0f);
@@ -382,10 +423,15 @@ int main(int argc, char** argv) {
     finishSaves(); // (a map being written)
     finishThumbs(); // (its picture, then the GPU copies)
     screenshot::finish();
+    navg::shutdown();
+    terrain::shutdown();
     gpumon::stop();
     sfx::shutdown();
+    gputime::shutdown();
+    flightShutdown();
     ui::shutdown();
     gfx::shutdown();
+    SetTraceLogCallback(nullptr);
     CloseWindow();
-    return 0;
+    return testing ? autotestExitCode() : 0;
 }

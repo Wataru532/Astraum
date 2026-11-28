@@ -1,11 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
-project(Astraum C CXX RC)
+project(Astraum VERSION 1.2.1 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
+option(ASTRAUM_ENABLE_TESTS "Include the built-in automated test suite and diagnostic CLI flags" ON)
 
 # raylib (vendored, static)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -14,9 +15,12 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(OPENGL_VERSION "3.3" CACHE STRING "" FORCE)
 add_subdirectory(third_party/raylib)
 
-set(ASTRAUM_CXX_FLAGS $<$<COMPILE_LANGUAGE:CXX>:-O2 -Wall -Wno-missing-field-initializers>)
+set(ASTRAUM_CXX_FLAGS
+    $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wno-missing-field-initializers>
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<NOT:$<CONFIG:Debug>>>:-O2>)
 if(SF_NOSTRIP)
-  set(ASTRAUM_CXX_FLAGS ${ASTRAUM_CXX_FLAGS} -g)
+  list(APPEND ASTRAUM_CXX_FLAGS $<$<COMPILE_LANGUAGE:CXX>:-g>)
 endif()
 
 # ---------------------------------------------------------------- layers (clean architecture)
@@ -40,21 +44,28 @@ target_link_libraries(astraum_application PUBLIC astraum_domain)
 target_compile_options(astraum_application PRIVATE ${ASTRAUM_CXX_FLAGS})
 
 file(GLOB OUTER_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/infrastructure/*.cpp ${CMAKE_SOURCE_DIR}/src/presentation/*.cpp
-     ${CMAKE_SOURCE_DIR}/src/tests/*.cpp ${CMAKE_SOURCE_DIR}/src/main.cpp)
+     ${CMAKE_SOURCE_DIR}/src/main.cpp)
+if(ASTRAUM_ENABLE_TESTS)
+  file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/tests/*.cpp)
+  list(APPEND OUTER_SOURCES ${TEST_SOURCES})
+endif()
 add_executable(Astraum WIN32 ${OUTER_SOURCES} ${CMAKE_SOURCE_DIR}/src/app.rc)
+if(NOT ASTRAUM_ENABLE_TESTS)
+  target_compile_definitions(Astraum PRIVATE ASTRAUM_NO_TESTS=1)
+endif()
 target_include_directories(Astraum PRIVATE ${CMAKE_SOURCE_DIR}/src/infrastructure ${CMAKE_SOURCE_DIR}/src/presentation ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(Astraum PRIVATE astraum_application raylib opengl32 gdi32 winmm psapi pdh shell32 ole32)
 target_compile_options(Astraum PRIVATE ${ASTRAUM_CXX_FLAGS})
 
 # embedded resources: rebuild app.rc when an asset changes
-file(GLOB SF_MAPS ${CMAKE_SOURCE_DIR}/assets/maps/* ${CMAKE_SOURCE_DIR}/assets/sky/*)
-file(GLOB SF_AUDIO ${CMAKE_SOURCE_DIR}/src/audio/fx/* ${CMAKE_SOURCE_DIR}/src/audio/bgm/*)
+file(GLOB SF_MAPS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/assets/maps/* ${CMAKE_SOURCE_DIR}/assets/sky/*)
+file(GLOB SF_AUDIO CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/audio/fx/* ${CMAKE_SOURCE_DIR}/src/audio/bgm/*)
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/app.rc PROPERTIES OBJECT_DEPENDS
-                            "${CMAKE_SOURCE_DIR}/assets/icon.ico;${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt;${SF_MAPS};${SF_AUDIO}")
+                            "${CMAKE_SOURCE_DIR}/src/app.manifest;${CMAKE_SOURCE_DIR}/assets/icon.ico;${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt;${SF_MAPS};${SF_AUDIO}")
 
 if(MINGW)
-  if(SF_NOSTRIP)
-    # diagnostic build with symbols (cmake -B build_dbg -DSF_NOSTRIP=1)
+  if(SF_NOSTRIP OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+    # diagnostic / debug build with symbols (cmake -B build_dbg -DSF_NOSTRIP=1)
     target_link_options(Astraum PRIVATE -static -static-libgcc -static-libstdc++ -Wl,-Map=${CMAKE_BINARY_DIR}/Astraum.map)
   else()
     target_link_options(Astraum PRIVATE -static -static-libgcc -static-libstdc++ -s -Wl,-Map=${CMAKE_BINARY_DIR}/Astraum.map)

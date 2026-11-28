@@ -36,9 +36,12 @@ def resize_f(a, w, h):
 
 
 def corr(a, b):
-    a = a - a.mean()
-    b = b - b.mean()
-    return float((a * b).sum() / np.sqrt((a * a).sum() * (b * b).sum() + 1e-12))
+    mask = np.isfinite(a) & np.isfinite(b)
+    if not mask.any():
+        return 0.0
+    aa = a[mask] - a[mask].mean()
+    bb = b[mask] - b[mask].mean()
+    return float((aa * bb).sum() / np.sqrt((aa * aa).sum() * (bb * bb).sum() + 1e-12))
 
 
 def orient(arr, ref):
@@ -52,6 +55,7 @@ def orient(arr, ref):
 
 
 def height_code(h):
+    h = np.nan_to_num(h, nan=0.0, posinf=0.0, neginf=0.0)
     code = np.clip(np.round((h - H_OFS) / H_STEP), 0, 65535).astype(np.uint16)
     rgb = np.zeros(code.shape + (3,), np.uint8)
     rgb[..., 0] = code >> 8
@@ -113,9 +117,9 @@ def main():
 
     # ---------------- Earth
     ref = np.asarray(Image.open(f"{out}/earth_color.jpg").convert("L"), np.float32)
-    col = Image.open(f"{src}/earth_color_12000.jpg").convert("RGB")
+    col = Image.open(f"{src}/earth_color_12000.jpg")
     col.draft("RGB", (col.width // 2, col.height // 2))
-    ca = np.asarray(col.resize((COLOR_W, COLOR_H), Image.LANCZOS))
+    ca = np.asarray(col.convert("RGB").resize((COLOR_W, COLOR_H), Image.LANCZOS))
     ca, c, rolled = orient(ca, ref)
     log.append(f"earth colour: correlation with the global map {c:.2f}{' (rolled half a turn)' if rolled else ''}, "
                f"{pack_color(Image.fromarray(ca), out + '/earth_color_hi.pak') >> 20} MB")

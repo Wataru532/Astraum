@@ -1200,6 +1200,11 @@ std::shared_ptr<AeroTable> aeroTableCached(const std::vector<Component>& comps) 
     auto tab = buildAeroTable(comps);
     size_t bytes = aeroTableBytes(*tab);
     std::lock_guard<std::mutex> lk(g_aeroMutex);
+    for (auto it = g_aeroCache.begin(); it != g_aeroCache.end(); ++it)
+        if (it->key == key && it->ncomp == comps.size()) {
+            g_aeroCache.splice(g_aeroCache.begin(), g_aeroCache, it);
+            return it->tab;
+        }
     g_aeroCache.push_front({key, comps.size(), bytes, tab});
     g_aeroCacheBytes += bytes;
     while (g_aeroCacheBytes > AERO_CACHE_BUDGET && g_aeroCache.size() > 1) {
@@ -1252,7 +1257,7 @@ std::shared_ptr<AeroTable> buildAeroTable(const std::vector<Component>& comps) {
             hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
         }
     }
-    tab->length = std::max(0.5, len(hi - lo));
+    tab->length = samples.empty() ? 0.5 : std::max(0.5, len(hi - lo));
     // samples covered by another component do not see the flow
     for (auto& s : samples) {
         double eps = 1e-3 * (1 + C[s.comp].radius);
@@ -1396,12 +1401,14 @@ Vec3d wingForce(const Component& c, const CompPhys& p, const Vec3d& vAir, double
 
 AeroTable::Sample AeroTable::lookup(const Vec3d& u, std::vector<float>* exposureOut) const {
     Sample s{};
-    if (nt == 0) return s;
+    if (nt < 2 || np < 1 || !std::isfinite(u.x) || !std::isfinite(u.y) || !std::isfinite(u.z)) return s;
     double th = std::acos(clampd(u.z, -1, 1));
     double ph = wrapAngle(std::atan2(u.y, u.x));
     double ft = th / PI * (nt - 1), fp = ph / TAU * np;
-    int i0 = std::clamp((int)ft, 0, nt - 2), j0 = (int)fp % np;
-    double a = clampd(ft - i0, 0, 1), b = fp - std::floor(fp);
+    if (!std::isfinite(ft) || !std::isfinite(fp)) return s;
+    int i0 = std::clamp((int)ft, 0, nt - 2);
+    int j0 = ((int)std::floor(fp) % np + np) % np;
+    double a = clampd(ft - i0, 0, 1), b = clampd(fp - std::floor(fp), 0, 1);
     int j1 = (j0 + 1) % np;
     int idx[4] = {i0 * np + j0, i0 * np + j1, (i0 + 1) * np + j0, (i0 + 1) * np + j1};
     double w[4] = {(1 - a) * (1 - b), (1 - a) * b, a * (1 - b), a * b};
@@ -1520,14 +1527,15 @@ CraftStats analyzeCraft(const Craft& craft, const AeroTable* aero) {
             m = m1;
         }
         cs.massEnd = m;
-        // tanks of this stage are now (partly) empty
+        // tanks of this stage are now (partly) empty (snapshot per-propellant totals before updating)
+        double totP[PROP_N] = {0};
+        for (int k = 0; k < n; k++)
+            if (comps[k].stage == sidx && comps[k].func == Func::Tank) totP[(int)comps[k].prop] += prop[k];
         for (int i = 0; i < n; i++)
             if (comps[i].stage == sidx && comps[i].func == Func::Tank) {
-                double tot = 0;
-                for (int k = 0; k < n; k++)
-                    if (comps[k].stage == sidx && comps[k].func == Func::Tank && comps[k].prop == comps[i].prop) tot += prop[k];
-                double left = tank[(int)comps[i].prop];
-                prop[i] = tot > 0 ? prop[i] * left / tot : 0;
+                int pi = (int)comps[i].prop;
+                double left = std::max(0.0, tank[pi]);
+                prop[i] = totP[pi] > 0 ? prop[i] * left / totP[pi] : 0;
             }
         st.totalDvVac += cs.dvVac;
         st.stages.push_back(cs);
@@ -1974,7 +1982,9 @@ bool craftFromText(Craft& out, const std::string& text, size_t maxComps) {
             k.func = (Func)f;
             k.shape = (Shape)s;
             k.prop = (Prop)prop;
-            k.dims = {clampd(k.dims.x, 0, 500), clampd(k.dims.y, 0, 500), clampd(k.dims.z, 0.001, 500)};
+            double minXY = (k.shape == Shape::Cylinder) ? 0.0 : 0.001;
+            k.dims = {clampd(k.dims.x, minXY, 500), clampd(k.dims.y, minXY, 500), clampd(k.dims.z, 0.001, 500)};
+            if (k.shape == Shape::Cylinder && std::max(k.dims.x, k.dims.y) < 0.001) k.dims.x = 0.001;
             k.pos = {clampd(k.pos.x, -2000, 2000), clampd(k.pos.y, -2000, 2000), clampd(k.pos.z, -2000, 2000)};
             k.material = std::clamp(k.material, 0, MATERIAL_COUNT - 1);
             k.wall = clampd(k.wall, 0.0001, 1.0);

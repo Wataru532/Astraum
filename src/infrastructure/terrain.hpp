@@ -22,6 +22,8 @@ struct Map {
 
 // load the embedded maps and bind them to the bodies of U (call once after the universe exists)
 void init(const Universe& U);
+// stop the background tile worker before raylib / static teardown
+void shutdown();
 const Map* map(int body);   // nullptr: no relief (yet)
 bool realColor(int body);   // a spacecraft colour map waits for the generated relief of this body
 // the map of a body, generating the relief of a solid body without a real map now (~0.1 s, once)

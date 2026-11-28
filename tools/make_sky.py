@@ -14,7 +14,7 @@ Written:
                  every star of the catalogue with a position and a magnitude (to ~6.5 mag: the naked-eye sky)
   milkyway.jpg   8192 x 4096, equirectangular in equatorial J2000 coordinates, column 0 = RA 12h and RA
                  increasing to the LEFT (the map's own layout: as the sky is seen from inside), row 0 = Dec +90;
-                 values gamma-encoded (linear ** (1 / 2.2)) after scaling the 99.97th percentile to white
+                 values gamma-encoded (linear ** (1 / 2.2)) after scaling the 99.95th percentile to white
 """
 import gzip
 import struct
@@ -51,8 +51,11 @@ def stars(src, out):
         for r in rows:
             f.write(struct.pack("<4f", *r))
     # checks: Sirius, Polaris
-    sir = min(rows, key=lambda r: r[2])
-    print(f"stars: {len(rows)}, brightest V {sir[2]:.2f} at RA {np.degrees(sir[0]):.2f} Dec {np.degrees(sir[1]):.2f} (Sirius: 101.29 -16.72)")
+    if rows:
+        sir = min(rows, key=lambda r: r[2])
+        print(f"stars: {len(rows)}, brightest V {sir[2]:.2f} at RA {np.degrees(sir[0]):.2f} Dec {np.degrees(sir[1]):.2f} (Sirius: 101.29 -16.72)")
+    else:
+        print("stars: 0")
 
 
 def milkyway(src, out):
@@ -83,7 +86,7 @@ def milkyway(src, out):
     lum = a.mean(axis=2)
     floor = float(np.percentile(lum, 50))
     white = float(np.percentile(lum, 99.95))
-    v = np.clip((a - floor) / (white - floor), 0, 1) ** (1 / 2.2)
+    v = np.clip((a - floor) / max(white - floor, 1e-12), 0, 1) ** (1 / 2.2)
     print(f"milky way: floor {floor:.4f}, white {white:.4f}")
     img = Image.fromarray(np.round(v * 255).astype(np.uint8), "RGB")
     img.save(f"{out}/milkyway.jpg", quality=92, optimize=True, subsampling=0)

@@ -354,15 +354,21 @@ void shutdown() {
         UnloadMusicStream(m);
     }
     g_bgm.tracks.clear();
+    g_bgm.playing = -1;
+    g_bgm.paused = false;
     StopAudioStream(g_stream);
     UnloadAudioStream(g_stream);
-    for (int i = 0; i < (int)Ev::COUNT; i++)
+    for (int i = 0; i < (int)Ev::COUNT; i++) {
         if (g_loaded[i]) UnloadSound(g_sounds[i]);
+        g_loaded[i] = false;
+    }
+    g_fromFiles = 0;
     CloseAudioDevice();
     g_ready = false;
 }
 
 bool dump(const char* dir) {
+    if (g_ready) return false; // only safe before the audio device callback thread is running
     static const char* names[] = {"click", "toggle", "stage", "ignite", "explosion", "chute", "touchdown", "hyper_in", "hyper_out", "tear", "milestone", "explosion_far"};
     auto write = [&](const std::string& name, const std::vector<float>& s) {
         std::vector<int16_t> pcm(s.size());
@@ -380,6 +386,7 @@ bool dump(const char* dir) {
     struct Case { const char* name; Ambient a; };
     Case cases[] = {{"mix_engine_air", {1, 0, 0.5f, 0, 0, 0}}, {"mix_engine_vacuum", {1, 1, 0.5f, 0, 0, 0}},
                     {"mix_wind", {0, 0, 0, 1, 0.5f, 0}}, {"mix_rcs", {0, 1, 0, 0, 0, 1}}};
+    float savedMaster = g_master.load();
     g_master = 1;
     for (auto& c : cases) {
         g_mix = MixState{};
@@ -389,14 +396,15 @@ bool dump(const char* dir) {
         ok &= write(c.name, s);
     }
     setAmbient({});
+    g_master = savedMaster;
     return ok;
 }
 
-void setVolume(float v) { g_master = std::clamp(v, 0.0f, 1.0f); }
+void setVolume(float v) { g_master = std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : 0.0f; }
 
 void play(Ev e, float gain) {
     int i = (int)e;
-    if (!g_ready || i < 0 || i >= (int)Ev::COUNT || !g_loaded[i] || g_master <= 0) return;
+    if (!g_ready || i < 0 || i >= (int)Ev::COUNT || !g_loaded[i] || g_master <= 0 || !std::isfinite(gain)) return;
     SetSoundVolume(g_sounds[i], std::clamp(gain * eventGain(e) * g_master, 0.0f, 1.0f));
     PlaySound(g_sounds[i]);
 }

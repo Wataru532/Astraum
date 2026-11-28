@@ -192,8 +192,10 @@ def main() -> None:
                          (LIC / "MinGW-w64-runtime.txt").read_text(encoding="utf-8")))
 
     text = ("\n\n".join(p.rstrip() for p in parts) + "\n").expandtabs(4)
-    OUT.write_text(text.replace("\r\n", "\n"), encoding="utf-8", newline="\r\n")
-    print(f"wrote {OUT} ({len(text.encode('utf-8'))} bytes)")
+    normalized = text.replace("\r\n", "\n")
+    OUT.write_text(normalized, encoding="utf-8", newline="\r\n")
+    written = len(normalized.replace("\n", "\r\n").encode("utf-8"))
+    print(f"wrote {OUT} ({written} bytes)")
 
 
 if __name__ == "__main__":

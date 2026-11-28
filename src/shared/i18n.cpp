@@ -32,9 +32,9 @@ const E TABLE[] = {
     {"Batteries, solar panels (1/r²), RTGs, fission reactors, ion thrusters and solar sails",
      "バッテリー、太陽電池 (1/r²)、RTG、核分裂炉、イオンエンジン、ソーラーセイル",
      "Batterien, Solarmodule (1/r²), RTGs, Kernreaktoren, Ionentriebwerke und Sonnensegel"},
-    {"Solar System (24 bodies) + Alpha Centauri A/B, Proxima Centauri and Barnard's Star",
-     "太陽系 (24 天体) + ケンタウルス座α星A/B、プロキシマ・ケンタウリ、バーナード星",
-     "Sonnensystem (24 Körper) + Alpha Centauri A/B, Proxima Centauri und Barnards Pfeilstern"},
+    {"Solar System (30 bodies) + Alpha Centauri A/B, Proxima Centauri and Barnard's Star",
+     "太陽系 (30 天体) + ケンタウルス座α星A/B、プロキシマ・ケンタウリ、バーナード星",
+     "Sonnensystem (30 Körper) + Alpha Centauri A/B, Proxima Centauri und Barnards Pfeilstern"},
     {"Could not load the saved game", "セーブデータを読み込めませんでした", "Spielstand konnte nicht geladen werden"},
     {"Data folder: {0}", "データフォルダ: {0}", "Datenordner: {0}"},
     // ---------------- settings
@@ -1970,12 +1970,17 @@ std::string tr(const std::string& en) {
 std::string trf(const std::string& en, const std::string& a, const std::string& b, const std::string& c) {
     std::string s = tr(en);
     const std::string* args[3] = {&a, &b, &c};
-    for (int k = 0; k < 3; k++) {
-        std::string key = "{" + std::to_string(k) + "}";
-        size_t p;
-        while ((p = s.find(key)) != std::string::npos) s.replace(p, key.size(), *args[k]);
+    std::string out;
+    out.reserve(s.size() + a.size() + b.size() + c.size());
+    for (size_t i = 0; i < s.size();) {
+        if (i + 2 < s.size() && s[i] == '{' && s[i + 2] == '}' && s[i + 1] >= '0' && s[i + 1] <= '2') {
+            out += *args[s[i + 1] - '0'];
+            i += 3;
+        } else {
+            out.push_back(s[i++]);
+        }
     }
-    return s;
+    return out;
 }
 
 // UTF-8 decoding of every translated string of a language (the font is made for these characters)

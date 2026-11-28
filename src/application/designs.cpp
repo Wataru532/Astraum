@@ -8,6 +8,7 @@
 #include "app.hpp"
 #include "brand.hpp"
 #include "i18n.hpp"
+#include "storage.hpp"
 
 namespace {
 // the UTF-8 character at s[i] (valid text: cleanLineText first): its byte count, its code point in cp
@@ -99,7 +100,9 @@ std::string legacyFileName(const std::string& s) {
 }
 
 std::string savedDesignName(const std::string& path) {
-    std::ifstream f(std::filesystem::path(path), std::ios::binary); // (UTF-8 path)
+    std::filesystem::path fp = pathFromUtf8(path);
+    if (fp.empty()) return {};
+    std::ifstream f(fp, std::ios::binary); // (UTF-8 path)
     if (!f) return {};
     char buf[512]; // (the header and the name line: never more than this)
     f.read(buf, sizeof buf);
@@ -124,10 +127,11 @@ std::vector<SavedFile> listSavedDesigns(const std::string& dir, const std::strin
     namespace fs = std::filesystem;
     std::vector<fs::path> found;
     std::error_code ec;
-    fs::path base(dir);
+    fs::path base = pathFromUtf8(dir);
+    if (base.empty()) return {};
     for (fs::directory_iterator it(base, ec), end; !ec && it != end; it.increment(ec)) {
         std::error_code ec2;
-        if (it->is_regular_file(ec2) && it->path().extension() == ext) found.push_back(it->path());
+        if (it->is_regular_file(ec2) && pathToUtf8(it->path().extension()) == ext) found.push_back(it->path());
         if (found.size() >= maxN) break;
     }
     // (renamed after the directory is read: an entry renamed while iterating could come up twice)
@@ -135,16 +139,17 @@ std::vector<SavedFile> listSavedDesigns(const std::string& dir, const std::strin
     for (const fs::path& p : found) {
         SavedFile s;
         try {
-            s.path = p.string();
+            s.path = pathToUtf8(p);
+            if (s.path.empty()) continue;
             s.name = savedDesignName(s.path);
             if (!s.name.empty()) {
-                std::string stem = p.stem().string(), want = sanitizeFileName(s.name);
+                std::string stem = pathToUtf8(p.stem()), want = sanitizeFileName(s.name);
                 if (stem != want && stem == legacyFileName(s.name)) {
                     std::error_code ec2;
-                    fs::path to = base / fs::path(want + ext);
-                    if (!fs::exists(to, ec2) && !ec2) {
+                    fs::path to = base / pathFromUtf8(want + ext);
+                    if (!to.empty() && !fs::exists(to, ec2) && !ec2) {
                         fs::rename(p, to, ec2);
-                        if (!ec2) s.path = to.string();
+                        if (!ec2) s.path = pathToUtf8(to);
                     }
                 }
             }
@@ -154,7 +159,7 @@ std::vector<SavedFile> listSavedDesigns(const std::string& dir, const std::strin
         out.push_back(s);
     }
     auto key = [](const SavedFile& s) {
-        std::string k = s.name.empty() ? std::filesystem::path(s.path).stem().string() : s.name;
+        std::string k = s.name.empty() ? pathToUtf8(pathFromUtf8(s.path).stem()) : s.name;
         for (char& c : k) if (c >= 'A' && c <= 'Z') c = char(c + 32);
         return k;
     };

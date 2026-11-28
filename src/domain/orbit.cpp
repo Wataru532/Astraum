@@ -18,9 +18,9 @@ Conic stateToConic(const Vec3d& r, const Vec3d& v, double mu) {
         c.P = norm(r);
         c.Q = cross(c.H, c.P);
         c.e = 1.0;
-        c.a = -mu / (2 * c.energy);
+        c.a = std::fabs(c.energy) > 1e-12 ? -mu / (2 * c.energy) : 1e300;
         c.pe = 0;
-        c.ap = c.energy < 0 ? 2 * c.a : -1;
+        c.ap = c.energy < -1e-12 && std::isfinite(c.a) ? 2 * c.a : -1;
         c.nu = 0;
         c.valid = true;
         return c;
@@ -34,9 +34,10 @@ Conic stateToConic(const Vec3d& r, const Vec3d& v, double mu) {
     if (std::fabs(c.e - 1.0) > 1e-9) c.a = c.p / (1 - c.e * c.e);
     else c.a = 1e300;
     c.pe = c.p / (1 + c.e);
-    if (c.e < 1) {
+    if (c.e < 1 && c.a > 0 && c.a < 1e100) {
         c.ap = c.p / (1 - c.e);
-        c.period = TAU * std::sqrt(c.a * c.a * c.a / mu);
+        double T = TAU * std::sqrt(c.a / mu) * c.a;
+        c.period = std::isfinite(T) ? T : 0;
     } else {
         c.ap = -1;
         c.period = 0;
@@ -55,25 +56,39 @@ static double meanAnomalyFromTrue(const Conic& c, double nu) {
         double E = 2 * std::atan2(std::sqrt(1 - c.e) * std::sin(nu / 2), std::sqrt(1 + c.e) * std::cos(nu / 2));
         return E - c.e * std::sin(E);
     }
-    double F = 2 * std::atanh(std::sqrt((c.e - 1) / (c.e + 1)) * std::tan(nu / 2));
+    double arg = std::sqrt((c.e - 1) / (c.e + 1)) * std::tan(nu / 2);
+    if (!std::isfinite(arg) || std::fabs(arg) >= 1.0) return 0;
+    double F = 2 * std::atanh(arg);
     return c.e * std::sinh(F) - F;
 }
 
 double timeToTrueAnomaly(const Conic& c, double nuTarget) {
-    if (!c.valid) return -1;
-    if (c.e < 1) {
-        double n = std::sqrt(c.mu / (c.a * c.a * c.a));
+    if (!c.valid || c.mu <= 0) return -1;
+    if (c.e < 1 - 1e-9 && c.a > 0 && c.a < 1e100) {
+        double n = std::sqrt(c.mu / c.a) / c.a;
+        if (!(n > 0) || !std::isfinite(n)) return -1;
         double M0 = meanAnomalyFromTrue(c, c.nu), M1 = meanAnomalyFromTrue(c, nuTarget);
         double dM = wrapAngle(M1 - M0);
-        return dM / n;
+        double dt = dM / n;
+        return std::isfinite(dt) ? dt : -1;
+    }
+    if (std::fabs(c.e - 1.0) <= 1e-9) {
+        // parabolic (Barker's equation): only if non-radial (p > 0) and within (-pi, pi)
+        if (c.p <= 1e-9 || std::fabs(nuTarget) >= PI - 1e-6 || std::fabs(c.nu) >= PI - 1e-6) return -1;
+        double D0 = std::tan(c.nu * 0.5), D1 = std::tan(nuTarget * 0.5);
+        double dt = 0.5 * std::sqrt(c.p * c.p * c.p / c.mu) * ((D1 + D1 * D1 * D1 / 3.0) - (D0 + D0 * D0 * D0 / 3.0));
+        return (std::isfinite(dt) && dt >= 0) ? dt : -1;
     }
     // hyperbolic: only reachable if within asymptote limits
-    double nuInf = std::acos(-1.0 / c.e);
-    if (std::fabs(nuTarget) >= nuInf) return -1;
-    double n = std::sqrt(c.mu / (-c.a * -c.a * -c.a));
+    if (!(c.a < 0) || !std::isfinite(c.a) || c.e <= 1.0) return -1;
+    double nuInf = std::acos(clampd(-1.0 / c.e, -1.0, 1.0));
+    if (std::fabs(nuTarget) >= nuInf - 1e-9 || std::fabs(c.nu) >= nuInf - 1e-9) return -1;
+    double ma = -c.a;
+    double n = std::sqrt(c.mu / ma) / ma;
+    if (!(n > 0) || !std::isfinite(n)) return -1;
     double M0 = meanAnomalyFromTrue(c, c.nu), M1 = meanAnomalyFromTrue(c, nuTarget);
     double dt = (M1 - M0) / n;
-    return dt >= 0 ? dt : -1;
+    return (std::isfinite(dt) && dt >= 0) ? dt : -1;
 }
 
 static void stumpff(double z, double& C, double& S) {
@@ -150,8 +165,10 @@ void keplerPropagate(Vec3d& R0, Vec3d& V0, double mu, double dt) {
     double g = dt - chi * chi * chi * S / smu;
     Vec3d R = R0 * f + V0 * g;
     double r = len(R);
+    if (!(r > 1e-6) || !std::isfinite(r)) return;
     double fdot = smu / (r * r0) * (alpha * chi * chi * chi * S - chi);
     double gdot = 1 - chi * chi / r * C;
     Vec3d V = R0 * fdot + V0 * gdot;
-    if (std::isfinite(R.x) && std::isfinite(V.x)) { R0 = R; V0 = V; }
+    auto fin3 = [](const Vec3d& u) { return std::isfinite(u.x) && std::isfinite(u.y) && std::isfinite(u.z); };
+    if (fin3(R) && fin3(V)) { R0 = R; V0 = V; }
 }
